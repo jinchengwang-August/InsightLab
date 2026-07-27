@@ -1,0 +1,55 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1784812791260,
+      "tag": "0000_illegal_spyke",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1784814380737,
+      "tag": "0001_nervous_professor_monster",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1784814488232,
+      "tag": "0002_wakeful_doomsday",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1784822964005,
+      "tag": "0003_moaning_master_chief",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1784824654905,
+      "tag": "0004_oval_silver_samurai",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1784851801871,
+      "tag": "0005_lively_shockwave",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1784855646556,
+      "tag": "0006_equal_bill_hollister",
+      "breakpoints": true
+    }
+  ]
+}
