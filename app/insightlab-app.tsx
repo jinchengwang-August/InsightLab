@@ -6,6 +6,8 @@ import { feature } from "topojson-client";
 import type { GeometryCollection, Topology } from "topojson-specification";
 import worldData from "world-atlas/countries-110m.json";
 import { createClient, type SupabaseClient, type User as SupabaseUser } from "@supabase/supabase-js";
+import { hasVerifiedSupabaseSession } from "./auth-flow";
+import { discoveryModeForResponse, type DiscoveryMode } from "./discovery-flow";
 
 type Role = "founder" | "contributor" | "investor";
 type Locale = "en" | "zh" | "es";
@@ -38,6 +40,41 @@ type Idea = {
   reward:number;trend:string;color:string;quality:number;risk:number;velocity:number;resonance:number;
   availableModes:ContributionType[];surveyQuestions:SurveyQuestion[];
 };
+type ValidationRecord = {
+  id:number;title:string;description:string;category:string;status:string;study_type?:string;
+  reward_points?:number;signal_score?:number|null;response_count?:number;survey_json?:string;
+};
+
+const categoryColors:Record<string,string>={
+  Climate:"#d7663e","Digital Health":"#bf7951","Future of Work":"#a97956",
+  Education:"#8a8a5c","Consumer AI":"#7a5f78",Other:"#657d6a",
+};
+
+function parseSurveyQuestions(value:unknown):SurveyQuestion[]{
+  if(typeof value!=="string"||!value.trim())return [];
+  try{
+    const parsed=JSON.parse(value) as unknown;
+    if(!Array.isArray(parsed))return [];
+    return parsed.filter((item):item is SurveyQuestion=>Boolean(
+      item&&typeof item==="object"&&"id" in item&&"prompt" in item&&"type" in item&&"options" in item
+    ));
+  }catch{return [];}
+}
+
+function validationToIdea(row:ValidationRecord,founderLabel="InsightLab founder"):Idea{
+  const responses=Math.max(0,Number(row.response_count??0));
+  const score=Math.max(0,Math.min(100,Math.round(Number(row.signal_score??(responses?55+Math.sqrt(responses)*4:0)))));
+  const surveyQuestions=parseSurveyQuestions(row.survey_json);
+  return {
+    id:Number(row.id),category:String(row.category||"Other"),title:String(row.title),
+    question:String(row.description),founder:founderLabel,score,responses,
+    reward:Math.max(0,Number(row.reward_points??0)),trend:responses?"Live":"New",
+    color:categoryColors[String(row.category)]??categoryColors.Other,quality:score,
+    risk:Math.max(0,100-score),velocity:Math.min(100,45+responses*2),resonance:score,
+    availableModes:row.study_type==="survey"&&surveyQuestions.length?["rating","comment","survey"]:["rating","comment"],
+    surveyQuestions,
+  };
+}
 
 const ideas:Idea[] = [
   { id:1,category:"Climate",title:"Loop",question:"Would doorstep pickup make reusable takeout packaging effortless?",founder:"Maya Chen",score:87,responses:284,reward:120,trend:"+18%",color:"#d7663e",quality:91,risk:34,velocity:82,resonance:89,availableModes:["rating","comment","survey"],surveyQuestions:[
@@ -566,11 +603,17 @@ export default function InsightLabApp() {
         setProfile(data.profile);
         setProfileName(data.profile.displayName);
         setRole(data.profile.role);
-        await authClient?.auth.signOut();
-        setProfile(null);
-        setAuthUser(null);
+        const sessionResult=authClient?await authClient.auth.getSession():null;
+        if(!hasVerifiedSupabaseSession(sessionResult)){
+          setProfile(null);
+          setAuthUser(null);
+          setProfileLoaded(true);
+          notify(locale==="zh"?"请先验证邮箱，然后返回登录。":locale==="es"?"Verifica tu correo electrónico y vuelve para iniciar sesión.":"Verify your email, then return to sign in.");
+          return false;
+        }
         setProfileLoaded(true);
-        notify("Registration complete. Sign in to open your workspace.");
+        enterApp(data.profile.role,data.profile.memberTier);
+        notify(locale==="zh"?"欢迎加入 InsightLab，你的工作台已准备就绪。":locale==="es"?"Te damos la bienvenida a InsightLab. Tu espacio ya está listo.":"Welcome to InsightLab. Your workspace is ready.");
         return true;
       }
       else notify("We could not create the profile yet. Please try again.");
@@ -667,7 +710,7 @@ export default function InsightLabApp() {
 
       {view === "platform-insights" && <PlatformInsights onStart={startUsing} />}
       {view === "founder" && <FounderWorkspace notify={notify} setView={setView} apiFetch={apiFetch} isDemo={!profile} onSignIn={()=>startUsing("founder")} />}
-      {view === "contributor" && <ContributorWorkspace notify={notify} apiFetch={apiFetch} isDemo={!profile} reputation={profile?.reputationScore??742} onSignIn={()=>startUsing("contributor")} onReputation={next=>setProfile(current=>current?{...current,reputationScore:next}:current)} />}
+      {view === "contributor" && <ContributorWorkspace notify={notify} apiFetch={apiFetch} isDemo={!profile} locale={locale} reputation={profile?.reputationScore??742} onSignIn={()=>startUsing("contributor")} onReputation={next=>setProfile(current=>current?{...current,reputationScore:next}:current)} />}
       {view === "contributor-insights" && <ContributorInsights apiFetch={apiFetch} onExplore={()=>setView("contributor")} />}
       {view === "investor" && <InvestorWorkspace isDemo={!profile} onSignIn={()=>startUsing("investor")} onInsights={()=>setView("investor-insights")} />}
       {view === "investor-insights" && <InvestorInsights onWorkspace={()=>setView("investor")} />}
@@ -974,7 +1017,7 @@ function AuthGateway({client,configured,ready,providers,user,profile,profileLoad
           </div>
           <label className="auth-label">Short introduction<textarea value={bio} onChange={event=>setBio(event.target.value)} placeholder="What are you building, studying, or especially qualified to evaluate?"/></label>
           <div className="interest-picker">{interestOptions.map(item=><button key={item} className={interests.includes(item)?"active":""} onClick={()=>toggleInterest(item)}>{item}</button>)}</div>
-          <button className="primary auth-submit" disabled={busy||(name||user.displayName).trim().length<2} onClick={async()=>{const created=await onRegister({role:selectedRole,displayName:name||user.displayName,headline,bio,interests});if(created){switchIntent("login");setNotice("Registration complete. Sign in with the same verified identity.");}}}>{busy?"Creating your account…":"Complete registration →"}</button>
+          <button className="primary auth-submit" disabled={busy||(name||user.displayName).trim().length<2} onClick={async()=>{await onRegister({role:selectedRole,displayName:name||user.displayName,headline,bio,interests});}}>{busy?"Creating your account…":"Complete registration →"}</button>
         </>:<>
           <div className="auth-intent-tabs"><button className={intent==="login"?"active":""} onClick={()=>switchIntent("login")}>Sign in</button><button className={intent==="register"?"active":""} onClick={()=>switchIntent("register")}>Create account</button></div>
           <span className="auth-kicker">{intent==="register"?"NEW MEMBER":"SECURE ACCESS"}</span><h2>{intent==="register"?"Create your identity.":"Enter InsightLab."}</h2>
@@ -1432,8 +1475,13 @@ function LiveIdea({title,responses,score,change}:{title:string;responses:number;
   return <article className="live-idea"><div><span>● COLLECTING</span><b>{change}</b></div><h3>{title}</h3><p><span><b>{responses}</b> responses</span><span><b>{score}</b> signal score</span></p><div className="tiny-chart">{[22,31,29,43,51,61,74,68,86].map((x,i)=><i key={i} style={{height:`${x}%`}} />)}</div></article>
 }
 
-function ContributorWorkspace({notify,apiFetch,isDemo,reputation,onSignIn,onReputation}:{notify:(s:string)=>void;apiFetch:ApiFetch;isDemo:boolean;reputation:number;onSignIn:()=>void;onReputation:(score:number)=>void}) {
-  const categories=["All","Digital Health","Climate","Future of Work","Education","Consumer AI"];
+const discoveryCopy={
+  en:{loading:"Loading published validations…",loadingTag:"LIVE DATA",live:"LIVE PUBLISHED VALIDATIONS",fallback:"No published live validations yet. Showing clearly labeled demo examples.",fallbackTag:"DEMO FALLBACK",error:"Live validations could not be loaded. Check your connection or session, then retry.",errorTag:"LIVE DATA ERROR",retry:"Retry",founder:"Verified founder",founderName:"InsightLab founder"},
+  zh:{loading:"正在加载已发布的真实验证项目…",loadingTag:"真实数据",live:"真实已发布验证项目",fallback:"目前还没有已发布的真实项目，以下为明确标注的演示示例。",fallbackTag:"演示数据",error:"无法加载真实验证项目。请检查网络或登录状态后重试。",errorTag:"真实数据错误",retry:"重试",founder:"已验证创业者",founderName:"InsightLab 创业者"},
+  es:{loading:"Cargando validaciones publicadas…",loadingTag:"DATOS EN VIVO",live:"VALIDACIONES PUBLICADAS EN VIVO",fallback:"Todavía no hay validaciones publicadas. Se muestran ejemplos de demostración claramente etiquetados.",fallbackTag:"DATOS DE DEMOSTRACIÓN",error:"No se pudieron cargar las validaciones. Comprueba la conexión o la sesión e inténtalo de nuevo.",errorTag:"ERROR DE DATOS",retry:"Reintentar",founder:"Fundador verificado",founderName:"Fundador de InsightLab"},
+} satisfies Record<Locale,Record<"loading"|"loadingTag"|"live"|"fallback"|"fallbackTag"|"error"|"errorTag"|"retry"|"founder"|"founderName",string>>;
+
+function ContributorWorkspace({notify,apiFetch,isDemo,locale,reputation,onSignIn,onReputation}:{notify:(s:string)=>void;apiFetch:ApiFetch;isDemo:boolean;locale:Locale;reputation:number;onSignIn:()=>void;onReputation:(score:number)=>void}) {
   const [category,setCategory]=useState("All");
   const [search,setSearch]=useState("");
   const [active,setActive]=useState<Idea|null>(null);
@@ -1443,7 +1491,31 @@ function ContributorWorkspace({notify,apiFetch,isDemo,reputation,onSignIn,onRepu
   const [answers,setAnswers]=useState<Record<string,string|string[]>>({});
   const [submitting,setSubmitting]=useState(false);
   const [displayReputation,setDisplayReputation]=useState(reputation);
-  const filtered=useMemo(()=>ideas.filter(idea=>(category==="All"||idea.category===category)&&(idea.title+" "+idea.question+" "+idea.founder).toLowerCase().includes(search.toLowerCase())),[category,search]);
+  const [catalog,setCatalog]=useState<Idea[]>(isDemo?ideas:[]);
+  const [catalogMode,setCatalogMode]=useState<DiscoveryMode>(isDemo?"demo":"loading");
+  const [retryKey,setRetryKey]=useState(0);
+  const labels=discoveryCopy[locale];
+  useEffect(()=>{
+    if(isDemo)return;
+    let activeRequest=true;
+    apiFetch("/api/validations")
+      .then(async response=>{
+        if(discoveryModeForResponse(response.ok,0)==="error")throw new Error(`VALIDATIONS_${response.status}`);
+        return response.json() as Promise<{validations?:ValidationRecord[]}>;
+      })
+      .then(data=>{
+        if(!activeRequest)return;
+        const published=(data?.validations??[]).filter(row=>row.status==="published").map(row=>validationToIdea(row,labels.founderName));
+        const nextMode=discoveryModeForResponse(true,published.length);
+        if(nextMode==="live"){setCatalog(published);setCatalogMode(nextMode);}
+        else{setCatalog(ideas);setCatalogMode(nextMode);}
+      })
+      .catch(()=>{if(activeRequest){setCatalog([]);setCatalogMode("error");}});
+    return()=>{activeRequest=false;};
+  },[apiFetch,isDemo,labels.founderName,retryKey]);
+  const retryCatalog=()=>{setCatalog([]);setCatalogMode("loading");setRetryKey(value=>value+1);};
+  const categories=useMemo(()=>["All",...Array.from(new Set(catalog.map(idea=>idea.category)))],[catalog]);
+  const filtered=useMemo(()=>catalog.filter(idea=>(category==="All"||idea.category===category)&&(idea.title+" "+idea.question+" "+idea.founder).toLowerCase().includes(search.toLowerCase())),[catalog,category,search]);
   const basePoints=mode==="rating"?12:mode==="comment"?35:70;
   const openIdea=(idea:Idea)=>{setActive(idea);setMode(idea.availableModes.includes("comment")?"comment":"rating");setRating(0);setComment("");setAnswers({});};
   const updateAnswer=(question:SurveyQuestion,value:string)=>{
@@ -1485,10 +1557,15 @@ function ContributorWorkspace({notify,apiFetch,isDemo,reputation,onSignIn,onRepu
   };
   return <section className="workspace-page role-workspace contributor-page">
     <DemoModeBar visible={isDemo} role="Contributor" onSignIn={onSignIn}/>
+    {!isDemo&&<div className={`live-data-status ${catalogMode}`}>
+      <span>{catalogMode==="live"?labels.live:catalogMode==="loading"?labels.loadingTag:catalogMode==="error"?labels.errorTag:labels.fallbackTag}</span>
+      <p>{catalogMode==="live"?`${catalog.length} ${labels.live.toLowerCase()}`:catalogMode==="loading"?labels.loading:catalogMode==="error"?labels.error:labels.fallback}</p>
+      {catalogMode==="error"&&<button onClick={retryCatalog}>{labels.retry}</button>}
+    </div>}
     <div className="workspace-heading"><div><span>CONTRIBUTOR DISCOVERY</span><h1>Choose the ideas<br/><em>you can sharpen.</em></h1></div><div className="search-box"><span>⌕</span><input value={search} onChange={event=>setSearch(event.target.value)} placeholder="Search ideas, problems, or founders"/></div></div>
     <div className="effort-key"><span>CHOOSE YOUR EFFORT</span><div><i>◇</i><b>Quick rating</b><small>12 base pts</small></div><div><i>✎</i><b>Reasoned comment</b><small>35 base pts</small></div><div><i>▦</i><b>Full survey</b><small>70 base pts</small></div><p>Final rewards are adjusted by specificity, integrity, and your continuously updated reputation.</p></div>
     <div className="interest-row">{categories.map(item=><button key={item} className={category===item?"active":""} onClick={()=>setCategory(item)}>{item}</button>)}</div>
-    <div className="contributor-layout"><div className="idea-feed">{filtered.length?filtered.map(idea=><article className="feed-card" key={idea.id}><div className="feed-top"><span style={{background:idea.color}}>{idea.category}</span><b>up to {idea.reward} pts</b></div><h2>{idea.title}</h2><p>{idea.question}</p><div className="task-mode-dots">{idea.availableModes.map(item=><span key={item}><i/>{item==="rating"?"Rating":item==="comment"?"Comment":"Survey"}</span>)}</div><div className="feed-stats"><span><b>{idea.score}</b> signal</span><span><b>{idea.responses}</b> responses</span><span><b>{idea.trend}</b> this week</span></div><div className="feed-founder"><span>{idea.founder[0]}</span><p><b>{idea.founder}</b><small>Verified founder</small></p><button onClick={()=>openIdea(idea)}>Choose response →</button></div></article>):<div className="feed-empty"><i/><h3>No exact matches.</h3><p>Try another category or a shorter search phrase.</p><button onClick={()=>{setSearch("");setCategory("All");}}>Reset discovery</button></div>}</div>
+    <div className="contributor-layout"><div className="idea-feed">{filtered.length?filtered.map(idea=><article className="feed-card" key={idea.id}><div className="feed-top"><span style={{background:idea.color}}>{idea.category}</span><b>up to {idea.reward} pts</b></div><h2>{idea.title}</h2><p>{idea.question}</p><div className="task-mode-dots">{idea.availableModes.map(item=><span key={item}><i/>{item==="rating"?"Rating":item==="comment"?"Comment":"Survey"}</span>)}</div><div className="feed-stats"><span><b>{idea.score}</b> signal</span><span><b>{idea.responses}</b> responses</span><span><b>{idea.trend}</b> this week</span></div><div className="feed-founder"><span>{idea.founder[0]}</span><p><b>{idea.founder}</b><small>{labels.founder}</small></p><button onClick={()=>openIdea(idea)}>Choose response →</button></div></article>):<div className="feed-empty"><i/><h3>No exact matches.</h3><p>Try another category or a shorter search phrase.</p><button onClick={()=>{setSearch("");setCategory("All");}}>Reset discovery</button></div>}</div>
       <aside className="contributor-score"><span>LIVE REPUTATION</span><div className="score-wheel" style={{background:`conic-gradient(#d8734e 0 ${displayReputation/10}%,rgba(255,255,255,.09) ${displayReputation/10}% 100%)`}}><div>{Math.round(displayReputation)}<small>/1000</small></div></div><h3>{displayReputation>=800?"Expert signal":displayReputation>=650?"Trusted specialist":"Building trust"}</h3><p>Your score recalculates after every response using quality, duplicate risk, and historical consistency.</p><div><b>Specificity</b><i><em style={{width:"88%"}}/></i><span>88</span></div><div><b>Constructiveness</b><i><em style={{width:"92%"}}/></i><span>92</span></div><button onClick={()=>notify("Interest settings are available from your profile.")}>Edit interests</button></aside>
     </div>
     {active&&<div className="modal-backdrop"><div className="response-modal response-studio"><button className="modal-close" onClick={()=>setActive(null)}>×</button><span>{active.category} · VERIFIED CONTRIBUTION</span><h2>{active.question}</h2>
@@ -1629,7 +1706,7 @@ function InvestorInsights({onWorkspace}:{onWorkspace:()=>void}){
 function AnalyticsModel({apiFetch}:{apiFetch:ApiFetch}) {
   const [live, setLive] = useState<null | { responseCount:number; signalScore:number; confidence:number; averageQuality:number; themes:Array<{name:string;evidence:number}> }>(null);
   useEffect(() => {
-    apiFetch("/api/analyze?validationId=1")
+    apiFetch("/api/analyze")
       .then(r => r.ok ? r.json() : null)
       .then(data => { if (data?.responseCount > 0) setLive(data); })
       .catch(() => undefined);

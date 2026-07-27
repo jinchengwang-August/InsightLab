@@ -1,4 +1,5 @@
 import { getExternalUser } from "../../external-auth";
+import { getPublishedValidations } from "./discovery";
 
 const createTables = [
   `CREATE TABLE IF NOT EXISTS validations (
@@ -70,8 +71,7 @@ export async function GET(request: Request) {
   if (!user) return Response.json({ error: "Sign in required" }, { status: 401 });
   const db = await getDatabase();
   await ensureSchema(db);
-  const result = await db.prepare("SELECT * FROM validations WHERE status = 'published' OR creator_email = ? ORDER BY id DESC LIMIT 50").bind(user.identityKey).all();
-  return Response.json({ validations: result.results });
+  return getPublishedValidations(user, db);
 }
 
 export async function POST(request: Request) {
