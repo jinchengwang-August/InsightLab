@@ -1,14 +1,9 @@
 import { getExternalUser } from "../../external-auth";
+import { getAdminAccessStatus } from "./access";
 
-async function hasAdminAccess(email: string | null) {
-  if (!email) return false;
+async function adminAccessStatus(user:{email:string|null}|null) {
   const { env } = await import("cloudflare:workers");
-  const values = env as unknown as Record<string, unknown>;
-  const allowedEmails = String(values.INSIGHTLAB_ADMIN_EMAILS ?? "")
-    .split(",")
-    .map((entry) => entry.trim().toLowerCase())
-    .filter(Boolean);
-  return allowedEmails.includes(email.trim().toLowerCase());
+  return getAdminAccessStatus(user,env.INSIGHTLAB_ADMIN_EMAILS);
 }
 
 async function getDatabase() {
@@ -35,8 +30,9 @@ async function getDatabase() {
 
 export async function GET(request: Request) {
   const user = await getExternalUser(request);
-  if (!user) return Response.json({ error: "Sign in required" }, { status: 401 });
-  if (!await hasAdminAccess(user.email)) return Response.json({ error: "Owner access required" }, { status: 403 });
+  const accessStatus=await adminAccessStatus(user);
+  if(accessStatus===401)return Response.json({ error: "Sign in required" }, { status: 401 });
+  if(accessStatus===403)return Response.json({ error: "Owner access required" }, { status: 403 });
   const db = await getDatabase();
   const now = Date.now();
   const sevenDaysAgo = new Date(now - 7 * 86_400_000).toISOString();
@@ -82,8 +78,9 @@ export async function GET(request: Request) {
 
 export async function POST(request:Request){
   const user=await getExternalUser(request);
-  if(!user)return Response.json({error:"Sign in required"},{status:401});
-  if(!await hasAdminAccess(user.email))return Response.json({error:"Owner access required"},{status:403});
+  const accessStatus=await adminAccessStatus(user);
+  if(accessStatus===401)return Response.json({error:"Sign in required"},{status:401});
+  if(accessStatus===403)return Response.json({error:"Owner access required"},{status:403});
   const body=await request.json() as {action?:string;type?:string;id?:number};
   const id=Math.round(Number(body.id));
   if(!Number.isFinite(id)||id<1)return Response.json({error:"Valid content id required"},{status:400});
