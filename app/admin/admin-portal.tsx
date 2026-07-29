@@ -4,6 +4,61 @@ import { useCallback, useEffect, useState } from "react";
 import { createClient, type SupabaseClient, type User } from "@supabase/supabase-js";
 import Link from "next/link";
 import { AdminDashboard, useInterfaceTranslation } from "../insightlab-app";
+import {
+  cleanupPreviewCopy,
+  CleanupPreviewRequestError,
+  requestCleanupPreview,
+  type CleanupPreviewPayload,
+} from "./cleanup-preview-ui";
+
+type AdminAccessState="checking"|"allowed"|"unauthorized"|"forbidden"|"error";
+
+function CleanupPreviewCard({apiFetch,locale}:{apiFetch:typeof fetch;locale:"en"|"zh"|"es"}) {
+  const [preview,setPreview]=useState<CleanupPreviewPayload|null>(null);
+  const [state,setState]=useState<"idle"|"loading"|"success"|"unauthorized"|"forbidden"|"error">("idle");
+  const copy=cleanupPreviewCopy[locale];
+  const runScan=async()=>{
+    setState("loading");
+    try{
+      setPreview(await requestCleanupPreview(apiFetch));
+      setState("success");
+    }catch(error){
+      setPreview(null);
+      if(error instanceof CleanupPreviewRequestError&&error.status===401)setState("unauthorized");
+      else if(error instanceof CleanupPreviewRequestError&&error.status===403)setState("forbidden");
+      else setState("error");
+    }
+  };
+  const schemaDrift=Boolean(preview&&(preview.schema.missingExpectedTables.length||preview.schema.otherUserAssociatedTables.length));
+  const metrics=preview?[
+    [copy.profiles,preview.records.profiles?.nonAdminOwned??0],
+    [copy.ideas,preview.records.validations?.nonAdminOwned??0],
+    [copy.responses,preview.records.responses?.affected??0],
+    [copy.analyses,preview.crossUser.affectedAnalyses],
+    [copy.points,preview.crossUser.affectedPointsLedger],
+    [copy.adminOnOther,preview.crossUser.adminResponsesOnNonAdminIdeas],
+    [copy.otherOnAdmin,preview.crossUser.nonAdminResponsesOnAdminIdeas],
+    [copy.orphans,preview.crossUser.potentialOrphans],
+    [copy.adminObjects,preview.r2.adminObjects],
+    [copy.otherObjects,preview.r2.nonAdminObjects],
+    [copy.unresolvedObjects,preview.r2.metadataMissingObject+preview.r2.objectsWithoutOwnership],
+  ]: [];
+  const statusMessage=state==="unauthorized"?copy.relogin:state==="forbidden"?copy.forbidden:state==="error"?copy.serverError:"";
+  return <section className="admin-cleanup-preview" aria-labelledby="cleanup-preview-title">
+    <div className="admin-cleanup-head">
+      <div><span>{copy.eyebrow}</span><h2 id="cleanup-preview-title">{copy.title}</h2><p>{copy.description}</p></div>
+      <button type="button" onClick={()=>void runScan()} disabled={state==="loading"}>
+        {state==="loading"?copy.scanning:preview?copy.rescan:copy.run}
+      </button>
+    </div>
+    <p className="admin-cleanup-safety"><i aria-hidden="true"/>{copy.safety}</p>
+    {statusMessage&&<div className="admin-cleanup-message error" role="alert">{statusMessage}</div>}
+    {state==="success"&&<div className="admin-cleanup-message success" role="status">{copy.success}</div>}
+    {preview?.incomplete&&<div className="admin-cleanup-message warning" role="alert">{copy.incomplete}</div>}
+    {schemaDrift&&<div className="admin-cleanup-message warning" role="alert">{copy.drift}</div>}
+    {preview&&<div className="admin-cleanup-metrics">{metrics.map(([label,value])=><article key={label}><span>{label}</span><b>{value.toLocaleString()}</b></article>)}</div>}
+  </section>;
+}
 
 export default function AdminPortal(){
   const [client,setClient]=useState<SupabaseClient|null>(null);
@@ -16,6 +71,7 @@ export default function AdminPortal(){
   const [notice,setNotice]=useState("");
   const [busy,setBusy]=useState(false);
   const [error,setError]=useState("");
+  const [adminAccess,setAdminAccess]=useState<AdminAccessState>("checking");
   const [locale,setLocale]=useState<"en"|"zh"|"es">("en");
   useInterfaceTranslation(locale);
 
@@ -34,10 +90,10 @@ export default function AdminPortal(){
         setClient(next);
         setConfigured(true);
         next.auth.getSession().then(({data})=>{
-          if(active){setUser(data.session?.user??null);setReady(true);}
+          if(active){setAdminAccess("checking");setUser(data.session?.user??null);setReady(true);}
         });
         const listener=next.auth.onAuthStateChange((_event,session)=>{
-          if(active)setUser(session?.user??null);
+          if(active){setAdminAccess("checking");setUser(session?.user??null);}
         });
         unsubscribe=()=>listener.data.subscription.unsubscribe();
       })
@@ -52,6 +108,16 @@ export default function AdminPortal(){
     if(token)headers.set("authorization",`Bearer ${token}`);
     return fetch(input,{...init,headers});
   },[client]);
+
+  useEffect(()=>{
+    let active=true;
+    if(!user)return()=>{active=false;};
+    void apiFetch("/api/admin",{method:"GET"}).then(response=>{
+      if(!active)return;
+      setAdminAccess(response.ok?"allowed":response.status===401?"unauthorized":response.status===403?"forbidden":"error");
+    }).catch(()=>{if(active)setAdminAccess("error");});
+    return()=>{active=false;};
+  },[apiFetch,user]);
 
   const google=async()=>{
     if(!client)return;
@@ -76,7 +142,7 @@ export default function AdminPortal(){
   };
   const signOut=async()=>{
     await client?.auth.signOut();
-    setUser(null);setPassword("");setForgotPassword(false);
+    setAdminAccess("checking");setUser(null);setPassword("");setForgotPassword(false);
   };
   const languageControl=<div className="admin-language admin-language-floating">{(["en","zh","es"] as const).map(item=><button className={locale===item?"active":""} key={item} onClick={()=>setLocale(item)}>{item==="zh"?"中文":item.toUpperCase()}</button>)}</div>;
 
@@ -104,8 +170,23 @@ export default function AdminPortal(){
     </section>
   </main>;
 
+  const accessCopy=locale==="zh"
+    ?{checking:"正在验证管理员权限…",unauthorized:"会话已失效，请重新登录。",forbidden:"当前账户没有管理员权限。",error:"无法验证管理员权限，请稍后重试。"}
+    :locale==="es"
+      ?{checking:"Verificando permisos de administración…",unauthorized:"La sesión ha caducado. Inicia sesión de nuevo.",forbidden:"Esta cuenta no tiene permisos de administración.",error:"No se pudieron verificar los permisos. Inténtalo más tarde."}
+      :{checking:"Verifying administrator access…",unauthorized:"Your session has expired. Sign in again.",forbidden:"This account does not have administrator permission.",error:"Administrator access could not be verified. Try again later."};
+
+  if(adminAccess!=="allowed")return <main className="admin-gateway">
+    {languageControl}
+    <div className="admin-gateway-brand">Insight<span>Lab</span><small>OWNER CONSOLE</small></div>
+    <section><span>SERVER-VERIFIED ACCESS</span><h1>{adminAccess==="checking"?accessCopy.checking:adminAccess==="unauthorized"?accessCopy.unauthorized:adminAccess==="forbidden"?accessCopy.forbidden:accessCopy.error}</h1>
+      {adminAccess==="unauthorized"&&<button className="admin-login-submit" onClick={signOut}>Sign in again</button>}
+    </section>
+  </main>;
+
   return <main className="standalone-admin">
     <header><Link href="/" className="admin-header-brand">Insight<span>Lab</span><small>OWNER CONSOLE</small></Link><div className="admin-language">{(["en","zh","es"] as const).map(item=><button className={locale===item?"active":""} key={item} onClick={()=>setLocale(item)}>{item==="zh"?"中文":item.toUpperCase()}</button>)}</div><div><span><i/>SECURE SESSION</span><b>{user.email}</b><button onClick={signOut}>Sign out</button></div></header>
     <AdminDashboard apiFetch={apiFetch} locale={locale}/>
+    <CleanupPreviewCard apiFetch={apiFetch} locale={locale}/>
   </main>;
 }
