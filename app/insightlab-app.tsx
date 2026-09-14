@@ -1,20 +1,29 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { geoDistance, geoGraticule10, geoOrthographic, geoPath } from "d3-geo";
-import { feature } from "topojson-client";
-import type { GeometryCollection, Topology } from "topojson-specification";
-import worldData from "world-atlas/countries-110m.json";
+import dynamic from "next/dynamic";
 import { createClient, type SupabaseClient, type User as SupabaseUser } from "@supabase/supabase-js";
 import { hasVerifiedSupabaseSession } from "./auth-flow";
 import { discoveryModeForResponse, type DiscoveryMode } from "./discovery-flow";
+import {
+  InsightAgentDock,
+  InsightAgentLauncher,
+  InsightBrandMark,
+  type AgentIdeaContext,
+  type AgentSide,
+  type FounderAgentPatch,
+  type InsightAgentContext,
+  type InsightAgentPatch,
+} from "./insight-agent";
+import { EcosystemMarquee, WelcomeSequence, WorkplaceTutorial } from "./brand-experience";
+import { AccountMenu, FooterAccountCard } from "./account-menu";
 
 type Role = "founder" | "contributor" | "investor";
 type Locale = "en" | "zh" | "es";
 type AuthProviders = { email:boolean; phone:boolean; google:boolean; github:boolean };
 type AuthIntent = "login" | "register";
 type View = "home" | "platform-insights" | "founder" | "contributor" | "contributor-insights" | "investor" | "investor-insights" | "analytics" | "rewards" | "meet" | "profile" | "trust" | "help";
-type AuthUser = { id:string; displayName:string; email:string|null; phone:string|null };
+type AuthUser = { id:string; displayName:string; email:string|null; phone:string|null; registrationRole:Role|null };
 type UserProfile = {
   displayName:string;
   role:Role;
@@ -28,6 +37,7 @@ type UserProfile = {
   location:string;
   website:string;
   avatarUrl:string;
+  coverUrl:string;
   email:string;
   phone:string|null;
   preferredLanguage:Locale;
@@ -44,6 +54,11 @@ type ValidationRecord = {
   id:number;title:string;description:string;category:string;status:string;study_type?:string;
   reward_points?:number;signal_score?:number|null;response_count?:number;survey_json?:string;
 };
+
+const EcosystemGlobe=dynamic<{locale:Locale}>(()=>import("./ecosystem-globe"),{
+  ssr:false,
+  loading:()=> <section className="ecosystem globe-ecosystem globe-loading" aria-label="Loading ecosystem map"><div className="ecosystem-copy"><span>ECOSYSTEM MAP</span><h2>Preparing the<br/><em>interactive globe.</em></h2></div><div className="globe-stage"><div className="globe-aura"/></div></section>,
+});
 
 const categoryColors:Record<string,string>={
   Climate:"#d7663e","Digital Health":"#bf7951","Future of Work":"#a97956",
@@ -147,7 +162,33 @@ const uiCopy = {
   footer:Record<"tagline"|"insights"|"terms"|"trust"|"help"|"meet"|"signOut"|"signIn"|"copyright",string>;
 }>;
 
-const originalInterfaceText=new WeakMap<Text,string>();
+const modelStripCopy:Record<Locale,{eyebrow:string;title:string;subtitle:string;button:string;signals:string[]}> = {
+  en:{
+    eyebrow:"TRANSPARENT WEIGHTING BASELINE",
+    title:"Each submitted response is checked.",
+    subtitle:"Its analytical weight reflects evidence quality.",
+    button:"Review the scoring method ↗",
+    signals:["Specificity","Constructiveness","Domain relevance","Consistency","Duplicate risk"],
+  },
+  zh:{
+    eyebrow:"透明权重基线",
+    title:"每条已提交的反馈都会经过检查。",
+    subtitle:"它的分析权重取决于证据质量。",
+    button:"查看评分方法 ↗",
+    signals:["具体程度","建设性","领域相关性","一致性","重复风险"],
+  },
+  es:{
+    eyebrow:"BASE DE PONDERACIÓN TRANSPARENTE",
+    title:"Cada respuesta enviada se revisa.",
+    subtitle:"Su peso analítico depende de la calidad de la evidencia.",
+    button:"Revisar el método de puntuación ↗",
+    signals:["Especificidad","Valor constructivo","Relevancia del dominio","Consistencia","Riesgo de duplicación"],
+  },
+};
+
+type InterfaceTranslationState={source:string;lastApplied:string};
+const interfaceTextState=new WeakMap<Text,InterfaceTranslationState>();
+const interfaceAttributeState=new WeakMap<Element,Map<string,InterfaceTranslationState>>();
 const interfaceTranslations:Record<Exclude<Locale,"en">,Record<string,string>>={
   zh:{
     "Platform insights":"平台数据总览","Meet us":"认识我们","Profile":"个人主页","Workspace":"工作台","Insights":"洞察",
@@ -297,6 +338,96 @@ Object.assign(interfaceTranslations.es,{
   "Sign in to console →":"Entrar a la consola →",
 });
 
+Object.assign(interfaceTranslations.zh,{
+  "These are product capabilities already present in the InsightLab platform—not projected user or partnership numbers.":"这些是 InsightLab 已经具备的产品能力，不是预测的用户数或合作方数量。",
+  "role-specific workspaces":"身份专属工作台","transparent quality signals":"透明质量信号",
+  "end-to-end validation loop":"端到端验证闭环","real-time presence infrastructure":"实时在线基础设施",
+  "VALIDATION":"创意验证","CONTRIBUTION":"贡献反馈","DISCOVERY":"信号发现",
+  "Publish the question behind the idea.":"发布创意背后真正需要验证的问题。",
+  "Define the audience, feedback target, reward, and evidence threshold before building.":"在开始打造前，先定义目标人群、反馈目标、回馈和证据门槛。",
+  "Turn perspective into reputation.":"把你的视角转化为信誉。",
+  "Discover ideas by interest, rate them, explain your reasoning, and earn weighted credibility.":"按兴趣发现创意、评分并解释理由，以高质量贡献积累信誉。",
+  "Read signal before consensus.":"在共识形成前读懂信号。",
+  "Compare resonance, response quality, and founder learning velocity across emerging categories.":"比较新兴类别中的需求共鸣、反馈质量与创业者学习速度。",
+  "Enter as Founder →":"以创业者身份进入 →","Enter as Contributor →":"以贡献者身份进入 →","Enter as Investor →":"以投资人身份进入 →",
+  "IDEA":"创意","EVIDENCE":"证据","Feedback becomes useful":"反馈只有被赋予结构后","when the system gives it structure.":"才能真正产生价值。",
+  "A founder defines the decision and the audience that matters.":"创业者定义需要支持的决策和真正重要的目标人群。",
+  "Collect":"收集","Matched contributors score, explain, and challenge the idea.":"匹配的贡献者评分、解释并挑战这个创意。",
+  "Weight":"加权","Integrity and relevance signals determine analytical influence.":"诚信与相关性信号决定每份反馈的分析影响力。",
+  "Learn":"学习","The founder receives patterns, objections, and a next experiment.":"创业者获得共性模式、关键异议和下一步实验建议。",
+  "A public, privacy-safe overview connects founder studies, contributor evidence, and investor discovery without exposing individual responses.":"公共且保护隐私的数据总览，把创业者调研、贡献者证据与投资人发现连接起来，同时不暴露个人反馈。",
+  "Founder":"创业者","Contributor":"贡献者","Investor":"投资人","frames the decision":"定义决策","weighted signal":"加权信号","adds evidence":"补充证据","reads momentum":"判断趋势",
+  "ECOSYSTEM MAP · ILLUSTRATIVE":"生态网络地图 · 示意","A global network model,":"全球网络模型，","ready for verified partners.":"为已验证合作方做好准备。",
+  "Explore how confirmed founder, university, and research partners can appear by region as the InsightLab network grows.":"查看随着 InsightLab 网络发展，经过确认的创业、大学与研究合作方未来可如何按地区展示。",
+  "Illustrative locations only. No formal partnership is implied until a partner is named and verified.":"地点仅用于示意。在合作方被正式公布并验证前，不代表已经建立正式合作关系。",
+  "Global":"全球","North America":"北美","Europe":"欧洲","Asia":"亚洲","Africa":"非洲","Oceania":"大洋洲",
+  "● SAMPLE NETWORK MAP":"● 示例网络地图","9 SAMPLE NODES":"9 个示例节点",
+  "Founder community sample":"创业者社区示例","Research community sample":"研究社区示例","University innovation sample":"大学创新示例",
+  "Climate technology sample":"气候科技示例","Contributor community sample":"贡献者社区示例","Builder community sample":"建设者社区示例",
+  "Emerging-market research sample":"新兴市场研究示例","Accelerator community sample":"加速器社区示例",
+  "Sample validation signal":"示例验证信号","Interactive sample globe showing possible InsightLab ecosystem regions":"展示 InsightLab 潜在生态区域的交互式示例地球仪",
+  "SAMPLE STUDY · DEMO":"示例调研 · 演示","284 SAMPLE RESPONSES":"284 份示例反馈","VALIDATION PREVIEW":"验证预览",
+  "Would a contribution-first talent network change how early teams hire?":"以贡献为先的人才网络会改变早期团队的招聘方式吗？",
+  "High":"高","Confidence":"置信度","TOP THEME":"主要主题","Show me proof of skill":"先展示能力证明",
+  "68% of qualified responses":"占合格反馈的 68%","MODEL SCENARIO":"模型情景","+12 illustrative quality-response lift":"+12 示例高质量反馈提升",
+  "NEW MEMBER":"新成员","Create your identity.":"创建你的身份。",
+  "Complete the basics, create a password, or continue with Google or GitHub.":"填写基本资料并创建密码，或使用 Google、GitHub 继续。",
+  "Sign in with your registered email and password.":"使用已注册的邮箱和密码登录。",
+  "One-line headline":"一句话简介","What are you building or exploring?":"你正在打造或探索什么？",
+  "Google · unavailable":"Google · 暂不可用","GitHub · unavailable":"GitHub · 暂不可用",
+  "Confirm password":"确认密码","explore before signing up":"注册前先体验","Preview as Founder":"体验创业者界面",
+  "Preview as Contributor":"体验贡献者界面","Preview as Investor":"体验投资人界面",
+  "Encrypted session · Passwords are handled by Supabase · One account per verified identity":"加密会话 · 密码由 Supabase 安全处理 · 每个已验证身份对应一个账号",
+  "Creating your account…":"正在创建账号…","Please wait…":"请稍候…","Loading your InsightLab profile…":"正在加载你的 InsightLab 资料…",
+  "Interface language":"界面语言","Skip to content":"跳到主要内容",
+  "ECOSYSTEM MAP":"生态网络地图","Preparing the":"正在准备","interactive globe.":"交互式地球仪。","Loading ecosystem map":"正在加载生态网络地图",
+});
+
+Object.assign(interfaceTranslations.es,{
+  "These are product capabilities already present in the InsightLab platform—not projected user or partnership numbers.":"Estas son capacidades que ya existen en InsightLab, no cifras previstas de usuarios o socios.",
+  "role-specific workspaces":"espacios específicos por rol","transparent quality signals":"señales de calidad transparentes",
+  "end-to-end validation loop":"ciclo de validación completo","real-time presence infrastructure":"infraestructura de presencia en tiempo real",
+  "VALIDATION":"VALIDACIÓN","CONTRIBUTION":"CONTRIBUCIÓN","DISCOVERY":"DESCUBRIMIENTO",
+  "Publish the question behind the idea.":"Publica la pregunta que hay detrás de la idea.",
+  "Define the audience, feedback target, reward, and evidence threshold before building.":"Define la audiencia, el objetivo, la recompensa y el umbral de evidencia antes de construir.",
+  "Turn perspective into reputation.":"Convierte tu perspectiva en reputación.",
+  "Discover ideas by interest, rate them, explain your reasoning, and earn weighted credibility.":"Descubre ideas por interés, puntúalas, explica tu razonamiento y gana credibilidad.",
+  "Read signal before consensus.":"Lee la señal antes del consenso.",
+  "Compare resonance, response quality, and founder learning velocity across emerging categories.":"Compara resonancia, calidad de respuesta y velocidad de aprendizaje en categorías emergentes.",
+  "Enter as Founder →":"Entrar como fundador →","Enter as Contributor →":"Entrar como colaborador →","Enter as Investor →":"Entrar como inversor →",
+  "IDEA":"IDEA","EVIDENCE":"EVIDENCIA","Feedback becomes useful":"El feedback se vuelve útil","when the system gives it structure.":"cuando el sistema le da estructura.",
+  "A founder defines the decision and the audience that matters.":"El fundador define la decisión y la audiencia relevante.",
+  "Collect":"Recopilar","Matched contributors score, explain, and challenge the idea.":"Los colaboradores adecuados puntúan, explican y cuestionan la idea.",
+  "Weight":"Ponderar","Integrity and relevance signals determine analytical influence.":"La integridad y la relevancia determinan la influencia analítica.",
+  "Learn":"Aprender","The founder receives patterns, objections, and a next experiment.":"El fundador recibe patrones, objeciones y un próximo experimento.",
+  "A public, privacy-safe overview connects founder studies, contributor evidence, and investor discovery without exposing individual responses.":"Un resumen público y privado conecta estudios, evidencia y descubrimiento sin revelar respuestas individuales.",
+  "Founder":"Fundador","Contributor":"Colaborador","Investor":"Inversor","frames the decision":"define la decisión","weighted signal":"señal ponderada","adds evidence":"aporta evidencia","reads momentum":"lee el impulso",
+  "ECOSYSTEM MAP · ILLUSTRATIVE":"MAPA DEL ECOSISTEMA · ILUSTRATIVO","A global network model,":"Un modelo de red global,","ready for verified partners.":"preparado para socios verificados.",
+  "Explore how confirmed founder, university, and research partners can appear by region as the InsightLab network grows.":"Explora cómo podrían mostrarse por región los socios confirmados de emprendimiento, universidades e investigación.",
+  "Illustrative locations only. No formal partnership is implied until a partner is named and verified.":"Las ubicaciones son ilustrativas. No implican una alianza formal hasta que el socio sea nombrado y verificado.",
+  "Global":"Global","North America":"Norteamérica","Europe":"Europa","Asia":"Asia","Africa":"África","Oceania":"Oceanía",
+  "● SAMPLE NETWORK MAP":"● MAPA DE RED DE EJEMPLO","9 SAMPLE NODES":"9 NODOS DE EJEMPLO",
+  "Founder community sample":"Ejemplo de comunidad fundadora","Research community sample":"Ejemplo de comunidad investigadora","University innovation sample":"Ejemplo de innovación universitaria",
+  "Climate technology sample":"Ejemplo de tecnología climática","Contributor community sample":"Ejemplo de comunidad colaboradora","Builder community sample":"Ejemplo de comunidad creadora",
+  "Emerging-market research sample":"Ejemplo de investigación emergente","Accelerator community sample":"Ejemplo de comunidad aceleradora",
+  "Sample validation signal":"Señal de validación de ejemplo","Interactive sample globe showing possible InsightLab ecosystem regions":"Globo interactivo de ejemplo con posibles regiones del ecosistema InsightLab",
+  "SAMPLE STUDY · DEMO":"ESTUDIO DE EJEMPLO · DEMO","284 SAMPLE RESPONSES":"284 RESPUESTAS DE EJEMPLO","VALIDATION PREVIEW":"VISTA PREVIA",
+  "Would a contribution-first talent network change how early teams hire?":"¿Una red de talento basada en contribuciones cambiaría cómo contratan los equipos iniciales?",
+  "High":"Alta","Confidence":"Confianza","TOP THEME":"TEMA PRINCIPAL","Show me proof of skill":"Muéstrame pruebas de capacidad",
+  "68% of qualified responses":"68% de las respuestas válidas","MODEL SCENARIO":"ESCENARIO DEL MODELO","+12 illustrative quality-response lift":"+12 de mejora ilustrativa en respuestas de calidad",
+  "NEW MEMBER":"NUEVO MIEMBRO","Create your identity.":"Crea tu identidad.",
+  "Complete the basics, create a password, or continue with Google or GitHub.":"Completa tus datos y crea una contraseña, o continúa con Google o GitHub.",
+  "Sign in with your registered email and password.":"Accede con tu correo registrado y contraseña.",
+  "One-line headline":"Titular breve","What are you building or exploring?":"¿Qué estás construyendo o explorando?",
+  "Google · unavailable":"Google · no disponible","GitHub · unavailable":"GitHub · no disponible",
+  "Confirm password":"Confirmar contraseña","explore before signing up":"explora antes de registrarte","Preview as Founder":"Probar como fundador",
+  "Preview as Contributor":"Probar como colaborador","Preview as Investor":"Probar como inversor",
+  "Encrypted session · Passwords are handled by Supabase · One account per verified identity":"Sesión cifrada · Supabase gestiona las contraseñas · Una cuenta por identidad verificada",
+  "Creating your account…":"Creando tu cuenta…","Please wait…":"Espera…","Loading your InsightLab profile…":"Cargando tu perfil de InsightLab…",
+  "Interface language":"Idioma de la interfaz","Skip to content":"Saltar al contenido",
+  "ECOSYSTEM MAP":"MAPA DEL ECOSISTEMA","Preparing the":"Preparando el","interactive globe.":"globo interactivo.","Loading ecosystem map":"Cargando el mapa del ecosistema",
+});
+
 export function useInterfaceTranslation(locale:Locale){
   useEffect(()=>{
     const translate=()=>{
@@ -305,23 +436,31 @@ export function useInterfaceTranslation(locale:Locale){
         ["placeholder","title","aria-label"].forEach(attribute=>{
           const current=element.getAttribute(attribute);
           if(!current)return;
-          const sourceKey=`data-i18n-${attribute.replace("aria-","")}`;
-          if(!element.hasAttribute(sourceKey))element.setAttribute(sourceKey,current);
-          const original=element.getAttribute(sourceKey)??current;
-          element.setAttribute(attribute,dictionary?.[original]??original);
+          let attributes=interfaceAttributeState.get(element);
+          if(!attributes){
+            attributes=new Map();
+            interfaceAttributeState.set(element,attributes);
+          }
+          const existing=attributes.get(attribute);
+          const source=existing&&current===existing.lastApplied?existing.source:current;
+          const translated=dictionary?.[source]??source;
+          if(current!==translated)element.setAttribute(attribute,translated);
+          attributes.set(attribute,{source,lastApplied:translated});
         });
         element.childNodes.forEach(node=>{
           if(node.nodeType!==Node.TEXT_NODE)return;
           const textNode=node as Text;
           const current=textNode.data;
           if(!current.trim())return;
-          if(!originalInterfaceText.has(textNode))originalInterfaceText.set(textNode,current);
-          const original=originalInterfaceText.get(textNode)??current;
-          const key=original.trim();
+          const existing=interfaceTextState.get(textNode);
+          const source=existing&&current===existing.lastApplied?existing.source:current;
+          const key=source.trim();
           const translated=dictionary?.[key]??key;
-          const leading=original.match(/^\s*/)?.[0]??"";
-          const trailing=original.match(/\s*$/)?.[0]??"";
-          textNode.data=`${leading}${translated}${trailing}`;
+          const leading=source.match(/^\s*/)?.[0]??"";
+          const trailing=source.match(/\s*$/)?.[0]??"";
+          const next=`${leading}${translated}${trailing}`;
+          if(current!==next)textNode.data=next;
+          interfaceTextState.set(textNode,{source,lastApplied:next});
         });
       });
     };
@@ -344,11 +483,13 @@ function LanguageSwitcher({locale,onChange,showLabel=false}:{locale:Locale;onCha
 }
 
 function mapAuthUser(user:SupabaseUser):AuthUser {
+  const metadataRole=user.user_metadata?.role;
   return {
     id:user.id,
-    displayName:String(user.user_metadata?.full_name ?? user.user_metadata?.name ?? user.email?.split("@")[0] ?? user.phone ?? "InsightLab member"),
+    displayName:String(user.user_metadata?.display_name ?? user.user_metadata?.full_name ?? user.user_metadata?.name ?? user.email?.split("@")[0] ?? user.phone ?? "InsightLab member"),
     email:user.email?.toLowerCase() ?? null,
     phone:user.phone ?? null,
+    registrationRole:metadataRole==="founder"||metadataRole==="contributor"||metadataRole==="investor"?metadataRole:null,
   };
 }
 
@@ -412,8 +553,19 @@ export default function InsightLabApp() {
   const [authBusy, setAuthBusy] = useState(false);
   const [passwordRecovery, setPasswordRecovery] = useState(false);
   const [onlineCount, setOnlineCount] = useState<number | null>(null);
+  const [pendingWelcome, setPendingWelcome] = useState(false);
+  const [welcomeOpen, setWelcomeOpen] = useState(false);
+  const [tourOpen, setTourOpen] = useState(false);
+  const [agentOpen, setAgentOpen] = useState(false);
+  const [agentSide, setAgentSide] = useState<AgentSide>("right");
+  const [agentContext, setAgentContext] = useState<InsightAgentContext>({});
+  const [agentPatch, setAgentPatch] = useState<{id:number;patch:InsightAgentPatch;draftId?:string|null}|null>(null);
+  const [incomingIdea, setIncomingIdea] = useState<AgentIdeaContext|null>(null);
+  const [accountMenuOpen, setAccountMenuOpen] = useState(false);
+  const tourShownRef=useRef(false);
   const content = roleContent[role];
   const copy = uiCopy[locale];
+  const modelCopy = modelStripCopy[locale];
   useInterfaceTranslation(locale);
   const isGeneralView=view === "home" || view === "platform-insights" || view === "meet" || view === "trust" || view === "help";
   const insightView:View = isGeneralView
@@ -484,7 +636,10 @@ export default function InsightLabApp() {
             if(event==="PASSWORD_RECOVERY"){
               setPasswordRecovery(true);
               setAuthOpen(true);
-            } else if(event==="SIGNED_IN")setAuthOpen(true);
+            } else if(event==="SIGNED_IN"){
+              setPendingWelcome(true);
+              setAuthOpen(true);
+            }
           }
         });
         unsubscribe=()=>listener.data.subscription.unsubscribe();
@@ -514,6 +669,11 @@ export default function InsightLabApp() {
           setRole(next.role);
           setProfileName(next.displayName);
           if(isLocale(next.preferredLanguage))changeLocale(next.preferredLanguage);
+          if(pendingWelcome){
+            setPendingWelcome(false);
+            setAuthOpen(false);
+            setWelcomeOpen(true);
+          }
         }else{
           setProfileName(authUser.displayName);
         }
@@ -521,7 +681,7 @@ export default function InsightLabApp() {
       })
       .catch(()=>{if(active)setProfileLoaded(true);});
     return()=>{active=false;};
-  },[authUser,authClient,apiFetch,changeLocale]);
+  },[authUser,authClient,apiFetch,changeLocale,pendingWelcome]);
 
   const selectLocale=useCallback((next:Locale)=>{
     changeLocale(next);
@@ -581,12 +741,22 @@ export default function InsightLabApp() {
     setToast(message);
     window.setTimeout(() => setToast(""), 3200);
   };
+  const handleFounderAgentContext=useCallback((founder:NonNullable<InsightAgentContext["founder"]>)=>setAgentContext({founder}),[]);
+  const handleContributorAgentContext=useCallback((contributor:NonNullable<InsightAgentContext["contributor"]>)=>setAgentContext({contributor}),[]);
 
   const enterApp = (selectedRole: Role, tier = "free", showTerms = false) => {
     setRole(selectedRole);
     setAuthOpen(false);
     setView(selectedRole);
     setTermsOpen(showTerms && tier === "free");
+    setIncomingIdea(null);
+    if(profile&&!tourShownRef.current){
+      const hidden=window.localStorage.getItem(`insightlab-ai-tour-v1:${authUser?.id??"member"}`)==="hidden";
+      if(!hidden){
+        tourShownRef.current=true;
+        window.setTimeout(()=>setTourOpen(true),420);
+      }
+    }
     window.scrollTo({top:0,behavior:"smooth"});
   };
 
@@ -600,6 +770,7 @@ export default function InsightLabApp() {
       });
       if (response.ok){
         const data=await response.json() as {profile:UserProfile};
+        window.localStorage.removeItem("insightlab-auth-intent");
         setProfile(data.profile);
         setProfileName(data.profile.displayName);
         setRole(data.profile.role);
@@ -612,8 +783,9 @@ export default function InsightLabApp() {
           return false;
         }
         setProfileLoaded(true);
-        enterApp(data.profile.role,data.profile.memberTier);
-        notify(locale==="zh"?"欢迎加入 InsightLab，你的工作台已准备就绪。":locale==="es"?"Te damos la bienvenida a InsightLab. Tu espacio ya está listo.":"Welcome to InsightLab. Your workspace is ready.");
+        setAuthOpen(false);
+        setPendingWelcome(false);
+        setWelcomeOpen(true);
         return true;
       }
       else notify("We could not create the profile yet. Please try again.");
@@ -631,8 +803,26 @@ export default function InsightLabApp() {
     await authClient?.auth.signOut();
     setProfile(null);
     setAuthUser(null);
+    setWelcomeOpen(false);
+    setTourOpen(false);
+    setAgentOpen(false);
+    setAccountMenuOpen(false);
     setView("home");
     window.scrollTo({top:0,behavior:"smooth"});
+  };
+
+  const switchAccount=async()=>{
+    await authClient?.auth.signOut();
+    window.localStorage.setItem("insightlab-auth-intent","login");
+    setProfile(null);
+    setAuthUser(null);
+    setWelcomeOpen(false);
+    setTourOpen(false);
+    setAgentOpen(false);
+    setAccountMenuOpen(false);
+    setView("home");
+    setAuthOpen(true);
+    window.scrollTo({top:0,behavior:"auto"});
   };
 
   if (authOpen) {
@@ -642,17 +832,51 @@ export default function InsightLabApp() {
       user={authUser} profile={profile} profileLoaded={profileLoaded}
       busy={authBusy} preferredRole={role} recovery={passwordRecovery}
       onRecoveryComplete={()=>setPasswordRecovery(false)} onRegister={register}
-      onBack={()=>setAuthOpen(false)} onOpenProfile={()=>profile&&enterApp(profile.role,profile.memberTier)}
+      locale={locale} onBack={()=>setAuthOpen(false)} onOpenProfile={()=>profile&&enterApp(profile.role,profile.memberTier)}
       onDemo={(selectedRole)=>enterApp(selectedRole,"demo")}
     />;
   }
 
+  const workspaceNode=view==="founder"
+    ? <FounderWorkspace
+        notify={notify}
+        setView={setView}
+        apiFetch={apiFetch}
+        isDemo={!profile}
+        onSignIn={()=>startUsing("founder")}
+        agentPatch={agentPatch?.patch.founder?{id:agentPatch.id,patch:agentPatch.patch.founder}:null}
+        onAgentContext={handleFounderAgentContext}
+      />
+    : view==="contributor"
+      ? <ContributorWorkspace
+          notify={notify}
+          apiFetch={apiFetch}
+          isDemo={!profile}
+          locale={locale}
+          reputation={profile?.reputationScore??742}
+          onSignIn={()=>startUsing("contributor")}
+          onReputation={next=>setProfile(current=>current?{...current,reputationScore:next}:current)}
+          agentPatch={agentPatch?.patch.contributor?{id:agentPatch.id,patch:agentPatch.patch.contributor,draftId:agentPatch.draftId}:null}
+          onAgentContext={handleContributorAgentContext}
+          onIdeaToAgent={idea=>{
+            const next:AgentIdeaContext={id:idea.id,title:idea.title,question:idea.question,category:idea.category,founder:idea.founder,score:idea.score,responses:idea.responses,reward:idea.reward};
+            setIncomingIdea(next);
+            setAgentContext(current=>({...current,contributor:{category:"All",search:"",activeIdea:next,commentDraft:""}}));
+            setAgentOpen(true);
+          }}
+        />
+      : view==="investor"
+        ? <InvestorWorkspace isDemo={!profile} onSignIn={()=>startUsing("investor")} onInsights={()=>setView("investor-insights")} />
+        : null;
+  const workspaceRole=view==="founder"||view==="contributor"||view==="investor"?view:null;
+
   return (
-    <main className="site-shell refreshed" data-locale={locale}>
+    <main className={`site-shell refreshed${agentOpen&&workspaceRole?` agent-open agent-${agentSide}`:""}`} data-locale={locale}>
+      <a className="skip-link" href="#insightlab-content">{locale==="zh"?"跳到主要内容":locale==="es"?"Saltar al contenido":"Skip to content"}</a>
       <PointerEffects />
       <header className={`nav reveal-nav ${view!=="home"||navVisible?"visible":""}`}>
-        <button className="brand" onClick={() => setView("home")} aria-label="InsightLab home">
-          <span className="brand-mark"><i /><i /><i /></span><span>Insight<span>Lab</span></span>
+          <button className="brand" onClick={() => setView("home")} aria-label="InsightLab home">
+          <InsightBrandMark/><span>Insight<span>Lab</span></span>
         </button>
         <nav className="nav-links">
           <button className={view === "home" ? "active" : ""} onClick={() => setView("home")}>{copy.nav.home}</button>
@@ -664,16 +888,18 @@ export default function InsightLabApp() {
         <div className="nav-actions">
           <LanguageSwitcher locale={locale} onChange={selectLocale}/>
           <span className="role-pill">{isGeneralView ? copy.nav.general : content.label}</span>
-          <button className="avatar" onClick={() => profile?setView("profile"):startUsing()}>{profileName.split(/\s/).map(x => x[0]).slice(0,2).join("").toUpperCase()}</button>
+          <button className={`avatar${profile?.avatarUrl?" has-image":""}`} style={profile?.avatarUrl?{backgroundImage:`url("${profile.avatarUrl}")`}:undefined} aria-expanded={accountMenuOpen} aria-haspopup="dialog" onClick={() => profile?setAccountMenuOpen(current=>!current):startUsing()}>{profile?.avatarUrl?"":profileName.split(/\s/).map(x => x[0]).slice(0,2).join("").toUpperCase()}</button>
+          {profile&&<AccountMenu open={accountMenuOpen} name={profile.displayName} email={profile.email} role={profile.role} avatarUrl={profile.avatarUrl} locale={locale} onClose={()=>setAccountMenuOpen(false)} onProfile={()=>{setAccountMenuOpen(false);setView("profile");}} onSwitch={switchAccount} onSignOut={signOut}/>}
         </div>
       </header>
 
+      <div id="insightlab-content" className="view-content" tabIndex={-1}>
       {view === "home" && <>
         <section className="hero new-hero">
           <div className="grain" />
           <MeteorField />
           <button className="hero-brand" onClick={()=>window.scrollTo({top:0,behavior:"smooth"})} aria-label="InsightLab home">
-            <span className="brand-mark"><i/><i/><i/></span><span>Insight<span>Lab</span></span>
+            <InsightBrandMark/><span>Insight<span>Lab</span></span>
           </button>
           <div className="hero-top-actions"><LanguageSwitcher locale={locale} onChange={selectLocale}/><button className="hero-signin" onClick={()=>startUsing()}>{authUser&&profile?copy.landing.openWorkspace:copy.landing.signIn} <span>↗</span></button></div>
           <div className="hero-copy">
@@ -692,27 +918,42 @@ export default function InsightLabApp() {
           <SignalSculpture role="founder" />
         </section>
 
+        <EcosystemMarquee locale={locale}/>
         <PlatformMilestones />
+        <HomeNetworkSnapshot locale={locale} onOpen={()=>{setView("platform-insights");window.scrollTo({top:0,behavior:"smooth"});}} />
         <RolePathways onChoose={startUsing}/>
         <HowItWorks />
         <PlatformPulseTeaser onOpen={()=>{setView("platform-insights");window.scrollTo({top:0,behavior:"smooth"});}} />
 
-        <EcosystemGlobe />
+        <EcosystemGlobe locale={locale} />
 
         <section className="model-strip">
-          <div><span>INSIGHT MODEL · LIVE</span><h2>Every response is analyzed.<br />Not every response is weighted equally.</h2></div>
+          <div><span>{modelCopy.eyebrow}</span><h2>{modelCopy.title}<br />{modelCopy.subtitle}</h2></div>
           <div className="model-formula">
-            {["Specificity", "Constructiveness", "Domain relevance", "Consistency", "Duplicate risk"].map((x, i) => <div key={x}><b>{String(i + 1).padStart(2, "0")}</b><span>{x}</span><i style={{ width: `${[88,82,76,93,12][i]}%` }} /></div>)}
+            {modelCopy.signals.map((x, i) => <div key={x}><b>{String(i + 1).padStart(2, "0")}</b><span>{x}</span><i style={{ width: `${[88,82,76,93,12][i]}%` }} /></div>)}
           </div>
-          <button onClick={() => setView("platform-insights")}>Explore the platform pulse ↗</button>
+          <button onClick={() => setView("platform-insights")}>{modelCopy.button}</button>
         </section>
       </>}
 
       {view === "platform-insights" && <PlatformInsights onStart={startUsing} />}
-      {view === "founder" && <FounderWorkspace notify={notify} setView={setView} apiFetch={apiFetch} isDemo={!profile} onSignIn={()=>startUsing("founder")} />}
-      {view === "contributor" && <ContributorWorkspace notify={notify} apiFetch={apiFetch} isDemo={!profile} locale={locale} reputation={profile?.reputationScore??742} onSignIn={()=>startUsing("contributor")} onReputation={next=>setProfile(current=>current?{...current,reputationScore:next}:current)} />}
+      {workspaceRole&&workspaceNode&&<section className={`agent-workspace-shell ${agentOpen?"open":"closed"} side-${agentSide}`}>
+        <InsightAgentLauncher locale={locale} open={agentOpen&&Boolean(profile)} onClick={()=>profile?setAgentOpen(current=>!current):startUsing(workspaceRole)}/>
+        <div className="agent-workspace-main">{workspaceNode}</div>
+        {agentOpen&&profile&&<InsightAgentDock
+          key={`${workspaceRole}-${locale}`}
+          role={workspaceRole}
+          locale={locale}
+          side={agentSide}
+          context={agentContext}
+          apiFetch={apiFetch}
+          incomingIdea={incomingIdea}
+          onSideChange={setAgentSide}
+          onClose={()=>setAgentOpen(false)}
+          onApply={(patch,draftId)=>setAgentPatch({id:Date.now(),patch,draftId})}
+        />}
+      </section>}
       {view === "contributor-insights" && <ContributorInsights apiFetch={apiFetch} onExplore={()=>setView("contributor")} />}
-      {view === "investor" && <InvestorWorkspace isDemo={!profile} onSignIn={()=>startUsing("investor")} onInsights={()=>setView("investor-insights")} />}
       {view === "investor-insights" && <InvestorInsights onWorkspace={()=>setView("investor")} />}
       {view === "analytics" && <AnalyticsModel apiFetch={apiFetch} />}
       {view === "rewards" && <Rewards notify={notify} apiFetch={apiFetch} locale={locale} signedIn={Boolean(profile)} onSignIn={()=>startUsing()} />}
@@ -720,6 +961,7 @@ export default function InsightLabApp() {
       {view === "trust" && <TrustCenter />}
       {view === "help" && <HelpCenter onStart={()=>startUsing()} />}
       {view === "profile" && profile && <ProfilePage profile={profile} apiFetch={apiFetch} locale={locale} onLocaleChange={selectLocale} onSaved={next=>{setProfile(next);setProfileName(next.displayName);if(isLocale(next.preferredLanguage))changeLocale(next.preferredLanguage);}} notify={notify}/>}
+      </div>
 
       {!isGeneralView&&<nav className="mobile-app-nav" aria-label="App navigation">
         <button className={view===role?"active":""} onClick={()=>startUsing()}><i>⌂</i><span>{locale==="zh"?"工作台":locale==="es"?"Espacio":"Workspace"}</span></button>
@@ -729,14 +971,23 @@ export default function InsightLabApp() {
       </nav>}
 
       <footer>
-        <div className="brand footer-brand"><span className="brand-mark"><i/><i/><i/></span><span>Insight<span>Lab</span></span></div>
+        <div className="brand footer-brand"><InsightBrandMark/><span>Insight<span>Lab</span></span></div>
         <p>{copy.footer.tagline}</p>
-        <div><button onClick={() => setView("platform-insights")}>{copy.footer.insights}</button><button onClick={() => setTermsOpen(true)}>{copy.footer.terms}</button><button onClick={() => setView("trust")}>{copy.footer.trust}</button><button onClick={() => setView("help")}>{copy.footer.help}</button><button onClick={() => setView("meet")}>{copy.footer.meet}</button>{authUser?<button onClick={signOut}>{copy.footer.signOut}</button>:<button onClick={()=>startUsing()}>{copy.footer.signIn}</button>}</div>
+        <div><button onClick={() => setView("platform-insights")}>{copy.footer.insights}</button><button onClick={() => setTermsOpen(true)}>{copy.footer.terms}</button><button onClick={() => setView("trust")}>{copy.footer.trust}</button><button onClick={() => setView("help")}>{copy.footer.help}</button><button onClick={() => setView("meet")}>{copy.footer.meet}</button>{!authUser&&<button onClick={()=>startUsing()}>{copy.footer.signIn}</button>}</div>
+        {profile&&<FooterAccountCard name={profile.displayName} email={profile.email} role={profile.role} avatarUrl={profile.avatarUrl} locale={locale} onProfile={()=>setView("profile")} onSwitch={switchAccount} onSignOut={signOut}/>}
         <small>{copy.footer.copyright}</small>
       </footer>
 
       {termsOpen && <MembershipTerms role={role} onClose={() => setTermsOpen(false)} onUpgrade={() => { setTermsOpen(false); notify("Membership options saved for review"); }} />}
-      {toast && <div className="toast">✓ {toast}</div>}
+      {welcomeOpen&&profile&&<WelcomeSequence name={profile.displayName} role={profile.role} locale={locale} onContinue={()=>{
+        setWelcomeOpen(false);
+        enterApp(profile.role,profile.memberTier,true);
+      }}/>}
+      {tourOpen&&profile&&<WorkplaceTutorial locale={locale} role={profile.role} onClose={neverShow=>{
+        setTourOpen(false);
+        if(neverShow)window.localStorage.setItem(`insightlab-ai-tour-v1:${authUser?.id??"member"}`,"hidden");
+      }} onLaunch={()=>setAgentOpen(true)}/>}
+      {toast && <div className="toast" role="status" aria-live="polite">✓ {toast}</div>}
     </main>
   );
 }
@@ -865,10 +1116,79 @@ function MeteorField(){
   return <canvas ref={canvasRef} className="meteor-field" aria-hidden="true"/>;
 }
 
-function AuthGateway({client,configured,ready,providers,user,profile,profileLoaded,busy,preferredRole,recovery,onRecoveryComplete,onRegister,onBack,onOpenProfile,onDemo}:{
+const authFlowCopy={
+  en:{
+    permanent:"Your role is permanent for this email",
+    permanentDetail:"Founder, Contributor, and Investor have different reputation histories and permissions. Once this email creates its profile, the role cannot be changed.",
+    confirmRole:"I understand and confirm this role",
+    checkInbox:"Check your inbox",
+    sentTo:"We sent a secure verification link to",
+    afterVerify:"Open the link on this device. You will return signed in and continue directly to your workspace.",
+    resend:"Resend verification email",
+    another:"Use another email",
+    resent:"A new verification email has been sent.",
+  },
+  zh:{
+    permanent:"这个邮箱绑定的身份是永久的",
+    permanentDetail:"Founder、Contributor 与 Investor 拥有不同的信誉记录和权限。这个邮箱创建个人资料后，身份将不能更改。",
+    confirmRole:"我已理解并确认这个身份",
+    checkInbox:"请检查你的邮箱",
+    sentTo:"我们已发送安全验证链接至",
+    afterVerify:"请在这台设备上打开链接。验证后会自动返回已登录状态并直接进入工作台。",
+    resend:"重新发送验证邮件",
+    another:"使用其他邮箱",
+    resent:"新的验证邮件已经发送。",
+  },
+  es:{
+    permanent:"El rol de este correo es permanente",
+    permanentDetail:"Fundador, Colaborador e Inversor tienen historiales y permisos distintos. El rol no se puede cambiar después de crear el perfil.",
+    confirmRole:"Entiendo y confirmo este rol",
+    checkInbox:"Revisa tu correo",
+    sentTo:"Enviamos un enlace seguro de verificación a",
+    afterVerify:"Abre el enlace en este dispositivo. Volverás con la sesión iniciada y entrarás directamente al espacio.",
+    resend:"Reenviar correo de verificación",
+    another:"Usar otro correo",
+    resent:"Se envió un nuevo correo de verificación.",
+  },
+} satisfies Record<Locale,Record<string,string>>;
+
+const authStoryCopy={
+  en:{
+    back:"Back to InsightLab",
+    eyebrow:"VERIFIED MEMBER ACCESS",
+    titleA:"One identity.",
+    titleB:"One lasting role.",
+    description:"Your verified email anchors a workspace, reputation history, and permissions that stay consistent over time.",
+    steps:[["01","Verify email"],["02","Confirm role"],["03","Build your record"]],
+    privacy:"Authentication is handled by Supabase. InsightLab never stores your password.",
+  },
+  zh:{
+    back:"返回 InsightLab",
+    eyebrow:"已验证会员入口",
+    titleA:"一个身份。",
+    titleB:"一个长期角色。",
+    description:"经过验证的邮箱会绑定你的工作台、信誉历史与长期保持一致的权限。",
+    steps:[["01","验证邮箱"],["02","确认身份"],["03","建立信誉记录"]],
+    privacy:"身份验证由 Supabase 处理，InsightLab 不会存储你的密码。",
+  },
+  es:{
+    back:"Volver a InsightLab",
+    eyebrow:"ACCESO VERIFICADO",
+    titleA:"Una identidad.",
+    titleB:"Un rol permanente.",
+    description:"Tu correo verificado vincula el espacio, el historial de reputación y permisos consistentes.",
+    steps:[["01","Verificar correo"],["02","Confirmar rol"],["03","Construir historial"]],
+    privacy:"Supabase gestiona la autenticación. InsightLab nunca almacena tu contraseña.",
+  },
+} satisfies Record<Locale,{
+  back:string;eyebrow:string;titleA:string;titleB:string;description:string;
+  steps:Array<[string,string]>;privacy:string;
+}>;
+
+function AuthGateway({client,configured,ready,providers,user,profile,profileLoaded,busy,preferredRole,recovery,locale,onRecoveryComplete,onRegister,onBack,onOpenProfile,onDemo}:{
   client:SupabaseClient|null;configured:boolean;ready:boolean;user:AuthUser|null;profile:UserProfile|null;profileLoaded:boolean;
   providers:AuthProviders;
-      busy:boolean;preferredRole:Role;recovery:boolean;onRecoveryComplete:()=>void;
+      busy:boolean;preferredRole:Role;recovery:boolean;locale:Locale;onRecoveryComplete:()=>void;
   onRegister:(details:{role:Role;displayName:string;headline:string;bio:string;interests:string[]})=>Promise<boolean>;
   onBack:()=>void;onOpenProfile:()=>void;onDemo:(role:Role)=>void;
 }) {
@@ -881,12 +1201,18 @@ function AuthGateway({client,configured,ready,providers,user,profile,profileLoad
   const [working,setWorking]=useState(false);
   const [error,setError]=useState("");
   const [notice,setNotice]=useState("");
-  const [selectedRole,setSelectedRole]=useState<Role>(preferredRole);
+  const [selectedRole,setSelectedRole]=useState<Role>(user?.registrationRole??preferredRole);
+  const [roleConfirmed,setRoleConfirmed]=useState(false);
+  const [verificationEmail,setVerificationEmail]=useState("");
   const [name,setName]=useState(user?.displayName??"");
   const [headline,setHeadline]=useState("");
   const [bio,setBio]=useState("");
   const [interests,setInterests]=useState<string[]>([]);
+  const autoProfileRef=useRef(false);
   const interestOptions=["AI & Data","Climate","Digital Health","Future of Work","Education","Consumer"];
+  const flowText=authFlowCopy[locale];
+  const storyText=authStoryCopy[locale];
+  const effectiveRole=user?.registrationRole??selectedRole;
 
   useEffect(()=>{
     if(!user||!profileLoaded||recovery)return;
@@ -894,6 +1220,17 @@ function AuthGateway({client,configured,ready,providers,user,profile,profileLoad
     if(profile){
       window.localStorage.removeItem("insightlab-auth-intent");
       onOpenProfile();
+    }else if(activeIntent==="register"&&user.registrationRole&&!autoProfileRef.current){
+      autoProfileRef.current=true;
+      void onRegister({
+        role:user.registrationRole,
+        displayName:user.displayName,
+        headline:"",
+        bio:"",
+        interests:[],
+      }).then(created=>{
+        if(!created)autoProfileRef.current=false;
+      });
     }else if(activeIntent==="login"&&client){
       void client.auth.signOut();
       window.setTimeout(()=>{
@@ -901,10 +1238,10 @@ function AuthGateway({client,configured,ready,providers,user,profile,profileLoad
         setIntent("login");
       },0);
     }
-  },[user,profile,profileLoaded,onOpenProfile,client,recovery]);
+  },[user,profile,profileLoaded,onOpenProfile,onRegister,client,recovery]);
 
   const switchIntent=(next:AuthIntent)=>{
-    setIntent(next);setForgotPassword(false);setPassword("");setConfirmPassword("");setError("");setNotice("");
+    setIntent(next);setForgotPassword(false);setPassword("");setConfirmPassword("");setError("");setNotice("");setVerificationEmail("");setRoleConfirmed(false);
     window.localStorage.setItem("insightlab-auth-intent",next);
   };
   const oauth=async(provider:"google"|"github")=>{
@@ -916,6 +1253,7 @@ function AuthGateway({client,configured,ready,providers,user,profile,profileLoad
       setError("Add your display name and choose a role before continuing.");
       return;
     }
+    if(intent==="register"&&!roleConfirmed){setError(flowText.confirmRole);return;}
     if(!client){setError("The authentication service is still loading. Please try again.");return;}
     setWorking(true);setError("");setNotice("");
     window.localStorage.setItem("insightlab-auth-intent",intent);
@@ -935,16 +1273,18 @@ function AuthGateway({client,configured,ready,providers,user,profile,profileLoad
     if(!providers.email){setError("Email and password authentication is not enabled in Supabase.");return;}
     if(!client){setError("The authentication service is still loading. Refresh the page and try again.");return;}
     if(intent==="register"&&name.trim().length<2){setError("Complete your display name before creating the account.");return;}
+    if(intent==="register"&&!roleConfirmed){setError(flowText.confirmRole);return;}
     setWorking(true);setError("");setNotice("");
     window.localStorage.setItem("insightlab-auth-intent",intent);
     try {
       const request=intent==="register"
-        ?client.auth.signUp({email:contact.trim(),password,options:{data:{display_name:name.trim(),role:selectedRole}}})
+        ?client.auth.signUp({email:contact.trim(),password,options:{emailRedirectTo:`${window.location.origin}/?verified=1`,data:{display_name:name.trim(),role:effectiveRole}}})
         :client.auth.signInWithPassword({email:contact.trim(),password});
       const result=await withAuthTimeout(request);
       if(result.error)setError(readableAuthError(result.error));
       else if(intent==="register"&&!result.data.session){
-        setNotice("Account created. Confirm your email from the message we sent, then return to sign in.");
+        setVerificationEmail(contact.trim());
+        setNotice("");
       } else if(intent==="register") {
         setNotice("Account created. Complete your profile to finish registration.");
       }
@@ -955,6 +1295,21 @@ function AuthGateway({client,configured,ready,providers,user,profile,profileLoad
     } finally {
       setWorking(false);
     }
+  };
+  const resendVerification=async()=>{
+    if(!client||!verificationEmail)return;
+    setWorking(true);setError("");setNotice("");
+    try{
+      const result=await withAuthTimeout(client.auth.resend({
+        type:"signup",
+        email:verificationEmail,
+        options:{emailRedirectTo:`${window.location.origin}/?verified=1`},
+      }));
+      if(result.error)setError(readableAuthError(result.error));
+      else setNotice(flowText.resent);
+    }catch{
+      setError("The verification email could not be resent. Wait one minute and try again.");
+    }finally{setWorking(false);}
   };
   const requestPasswordReset=async()=>{
     if(!client||!contact.trim()){setError("Enter the email address for your account first.");return;}
@@ -992,11 +1347,11 @@ function AuthGateway({client,configured,ready,providers,user,profile,profileLoad
   return <main className="auth-gateway">
     <PointerEffects />
     <section className="auth-story">
-      <button className="auth-back" onClick={onBack}>← Back to InsightLab</button>
-      <div className="auth-brand"><span className="brand-mark"><i/><i/><i/></span> Insight<span>Lab</span></div>
-      <div className="auth-message"><span>ONE NETWORK · THREE PERSPECTIVES</span><h1>Turn uncertainty<br/><em>into evidence.</em></h1><p>Secure identity, role-specific workspaces, and feedback that compounds into reputation.</p></div>
-      <div className="auth-pulse"><i/><i/><i/><i/><i/><i/><i/></div>
-      <small>Identity is handled by a dedicated authentication service. InsightLab never stores your password or verification code.</small>
+      <button className="auth-back" onClick={onBack}>← {storyText.back}</button>
+      <div className="auth-brand"><InsightBrandMark/> Insight<span>Lab</span></div>
+      <div className="auth-message"><span>{storyText.eyebrow}</span><h1>{storyText.titleA}<br/><em>{storyText.titleB}</em></h1><p>{storyText.description}</p></div>
+      <ol className="auth-principles">{storyText.steps.map(([index,label])=><li key={index}><b>{index}</b><span>{label}</span></li>)}</ol>
+      <small>{storyText.privacy}</small>
     </section>
     <section className="auth-panel">
       <div className="auth-card expanded">
@@ -1007,17 +1362,30 @@ function AuthGateway({client,configured,ready,providers,user,profile,profileLoad
           <label className="auth-label">Confirm new password<input type="password" autoComplete="new-password" value={confirmPassword} onChange={event=>setConfirmPassword(event.target.value)} placeholder="Enter it again"/></label>
           {error&&<div className="auth-error">{error}</div>}
           <button className="primary auth-submit" disabled={working||password.length<8||confirmPassword.length<8} onClick={updatePassword}>{working?"Please wait…":"Update password →"}</button>
-        </>:user&&!profileLoaded?<div className="auth-loading"><i/><span>Loading your InsightLab profile…</span></div>:user&&!profile?<>
+        </>:verificationEmail?<section className="verification-sent">
+          <div className="verification-orbit"><i/><i/><span>✓</span></div>
+          <span className="auth-kicker">EMAIL VERIFICATION</span>
+          <h2>{flowText.checkInbox}</h2>
+          <p>{flowText.sentTo}</p>
+          <b>{verificationEmail}</b>
+          <small>{flowText.afterVerify}</small>
+          {error&&<div className="auth-error">{error}</div>}
+          {notice&&<div className="auth-notice">{notice}</div>}
+          <button className="primary auth-submit" disabled={working} onClick={resendVerification}>{working?"Please wait…":flowText.resend}</button>
+          <button className="resend-code" onClick={()=>{setVerificationEmail("");setPassword("");setConfirmPassword("");setNotice("");setError("");}}>{flowText.another}</button>
+        </section>:user&&!profileLoaded?<div className="auth-loading"><i/><span>Loading your InsightLab profile…</span></div>:user&&!profile?<>
           <span className="auth-kicker">IDENTITY VERIFIED</span><h2>Make InsightLab yours.</h2>
           <p>Choose the role that should shape your first workspace. You can expand your profile at any time.</p>
           <label className="auth-label">Display name<input value={name||user.displayName} onChange={event=>setName(event.target.value)} placeholder="Your name"/></label>
           <label className="auth-label">One-line headline<input value={headline} onChange={event=>setHeadline(event.target.value)} placeholder="e.g. Berkeley founder exploring health AI"/></label>
           <div className="role-cards">
-            {(["founder","contributor","investor"] as Role[]).map(item=><button key={item} className={selectedRole===item?"selected":""} onClick={()=>setSelectedRole(item)}><span>{item==="founder"?"F":item==="contributor"?"C":"I"}</span><div><b>{roleContent[item].label}</b><small>{item==="founder"?"Publish and validate ideas":item==="contributor"?"Review ideas and build reputation":"Track evidence and emerging signal"}</small></div><i>{selectedRole===item?"●":"○"}</i></button>)}
+            {(["founder","contributor","investor"] as Role[]).map(item=><button key={item} disabled={Boolean(user.registrationRole)} className={effectiveRole===item?"selected":""} onClick={()=>{if(user.registrationRole)return;setSelectedRole(item);setRoleConfirmed(false);}}><span>{item==="founder"?"F":item==="contributor"?"C":"I"}</span><div><b>{roleContent[item].label}</b><small>{item==="founder"?"Publish and validate ideas":item==="contributor"?"Review ideas and build reputation":"Track evidence and emerging signal"}</small></div><i>{effectiveRole===item?"●":"○"}</i></button>)}
           </div>
+          <div className="role-lock-notice"><span>LOCKED ROLE</span><p><b>{flowText.permanent}</b>{flowText.permanentDetail}</p></div>
+          <label className="role-confirm"><input type="checkbox" checked={roleConfirmed} onChange={event=>setRoleConfirmed(event.target.checked)}/><span>{flowText.confirmRole}</span></label>
           <label className="auth-label">Short introduction<textarea value={bio} onChange={event=>setBio(event.target.value)} placeholder="What are you building, studying, or especially qualified to evaluate?"/></label>
           <div className="interest-picker">{interestOptions.map(item=><button key={item} className={interests.includes(item)?"active":""} onClick={()=>toggleInterest(item)}>{item}</button>)}</div>
-          <button className="primary auth-submit" disabled={busy||(name||user.displayName).trim().length<2} onClick={async()=>{await onRegister({role:selectedRole,displayName:name||user.displayName,headline,bio,interests});}}>{busy?"Creating your account…":"Complete registration →"}</button>
+          <button className="primary auth-submit" disabled={busy||!roleConfirmed||(name||user.displayName).trim().length<2} onClick={async()=>{await onRegister({role:effectiveRole,displayName:name||user.displayName,headline,bio,interests});}}>{busy?"Creating your account…":"Complete registration →"}</button>
         </>:<>
           <div className="auth-intent-tabs"><button className={intent==="login"?"active":""} onClick={()=>switchIntent("login")}>Sign in</button><button className={intent==="register"?"active":""} onClick={()=>switchIntent("register")}>Create account</button></div>
           <span className="auth-kicker">{intent==="register"?"NEW MEMBER":"SECURE ACCESS"}</span><h2>{intent==="register"?"Create your identity.":"Enter InsightLab."}</h2>
@@ -1025,7 +1393,9 @@ function AuthGateway({client,configured,ready,providers,user,profile,profileLoad
           {intent==="register"&&<div className="registration-basics">
             <label className="auth-label">Display name<input value={name} onChange={event=>setName(event.target.value)} placeholder="Your name"/></label>
             <label className="auth-label">One-line headline<input value={headline} onChange={event=>setHeadline(event.target.value)} placeholder="What are you building or exploring?"/></label>
-            <div className="role-cards compact">{(["founder","contributor","investor"] as Role[]).map(item=><button key={item} className={selectedRole===item?"selected":""} onClick={()=>setSelectedRole(item)}><span>{item[0].toUpperCase()}</span><div><b>{roleContent[item].label}</b></div><i>{selectedRole===item?"●":"○"}</i></button>)}</div>
+            <div className="role-cards compact">{(["founder","contributor","investor"] as Role[]).map(item=><button key={item} className={effectiveRole===item?"selected":""} onClick={()=>{setSelectedRole(item);setRoleConfirmed(false);}}><span>{item[0].toUpperCase()}</span><div><b>{roleContent[item].label}</b></div><i>{effectiveRole===item?"●":"○"}</i></button>)}</div>
+            <div className="role-lock-notice compact"><span>LOCKED ROLE</span><p><b>{flowText.permanent}</b>{flowText.permanentDetail}</p></div>
+            <label className="role-confirm"><input type="checkbox" checked={roleConfirmed} onChange={event=>setRoleConfirmed(event.target.checked)}/><span>{flowText.confirmRole}</span></label>
           </div>}
           {configured?<><div className="oauth-row">
               <button className={`google-auth${providers.google?"":" unavailable"}`} onClick={()=>oauth("google")} disabled={working}><span>G</span>{providers.google?"Google":"Google · unavailable"}</button>
@@ -1043,7 +1413,7 @@ function AuthGateway({client,configured,ready,providers,user,profile,profileLoad
             </label>}
             {error&&<div className="auth-error">{error}</div>}
             {notice&&<div className="auth-notice">{notice}</div>}
-            <button className="primary auth-submit" disabled={working||!contact.trim()||(intent==="register"&&name.trim().length<2)||(!forgotPassword&&password.length<8)} onClick={forgotPassword?requestPasswordReset:passwordAuth}>{working?"Please wait…":forgotPassword?"Send password reset email →":intent==="register"?"Create account →":"Sign in →"}</button>
+            <button className="primary auth-submit" disabled={working||!contact.trim()||(intent==="register"&&(name.trim().length<2||!roleConfirmed))||(!forgotPassword&&password.length<8)} onClick={forgotPassword?requestPasswordReset:passwordAuth}>{working?"Please wait…":forgotPassword?"Send password reset email →":intent==="register"?"Create account →":"Sign in →"}</button>
             {intent==="login"&&<button className="resend-code" onClick={()=>{setForgotPassword(value=>!value);setError("");setNotice("");}} disabled={working}>{forgotPassword?"← Back to sign in":"Forgot password?"}</button>}
           </>:<div className="auth-setup-note"><span>AUTH CONNECTION READY FOR SETUP</span><p>The password, Google, and GitHub interface is complete. Connect the project’s Supabase public configuration to activate real authentication.</p></div>}
           <div className="auth-divider"><span>explore before signing up</span></div>
@@ -1060,7 +1430,7 @@ function PlatformMilestones(){
     {value:"03",label:"role-specific workspaces",visual:"roles"},
     {value:"05",label:"transparent quality signals",visual:"signals"},
     {value:"01",label:"end-to-end validation loop",visual:"loop"},
-    {value:"LIVE",label:"database-backed presence",visual:"live"},
+    {value:"API",label:"real-time presence infrastructure",visual:"live"},
   ];
   return <section className="milestones-section"><div className="milestones-intro"><span>BUILT SO FAR</span><h2>A working foundation,<br/><em>not a slide-deck promise.</em></h2><p>These are product capabilities already present in the InsightLab platform—not projected user or partnership numbers.</p></div><div className="milestone-grid">{items.map((item,index)=><article key={item.label}><div className={`milestone-visual ${item.visual}`}>{Array.from({length:index+3},(_,i)=><i key={i}/>)}</div><b>{item.value}</b><span>{item.label}</span></article>)}</div></section>;
 }
@@ -1099,16 +1469,104 @@ type PlatformOverviewData={
   asOf:string;
 };
 
-function PlatformInsights({onStart}:{onStart:(role?:Role)=>void}){
+type PlatformOverviewState="loading"|"live"|"stale"|"unavailable";
+
+function usePlatformOverview(refreshMs=30_000){
   const [data,setData]=useState<PlatformOverviewData|null>(null);
+  const [state,setState]=useState<PlatformOverviewState>("loading");
   useEffect(()=>{
     let active=true;
-    fetch("/api/platform-overview")
-      .then(response=>response.ok?response.json():null)
-      .then(next=>{if(active&&next)setData(next as PlatformOverviewData);})
-      .catch(()=>undefined);
-    return()=>{active=false;};
-  },[]);
+    const load=async()=>{
+      try{
+        const response=await fetch("/api/platform-overview",{cache:"no-store"});
+        if(!response.ok)throw new Error("Platform overview unavailable");
+        const next=await response.json() as PlatformOverviewData;
+        if(active){setData(next);setState("live");}
+      }catch{
+        if(active)setState(current=>current==="live"||current==="stale"?"stale":"unavailable");
+      }
+    };
+    void load();
+    const timer=refreshMs>0?window.setInterval(()=>{
+      if(document.visibilityState==="visible")void load();
+    },refreshMs):undefined;
+    const onVisibility=()=>{if(document.visibilityState==="visible")void load();};
+    document.addEventListener("visibilitychange",onVisibility);
+    return()=>{
+      active=false;
+      if(timer)window.clearInterval(timer);
+      document.removeEventListener("visibilitychange",onVisibility);
+    };
+  },[refreshMs]);
+  return {data,state};
+}
+
+const networkSnapshotCopy:Record<Locale,{
+  eyebrow:string;title:string;description:string;status:Record<PlatformOverviewState,string>;
+  metrics:[string,string,string,string];updated:string;open:string;privacy:string;
+}> = {
+  en:{
+    eyebrow:"LIVE PLATFORM SNAPSHOT",title:"Real numbers, never invented activity.",
+    description:"These counts come directly from InsightLab’s production database and refresh while this page is open.",
+    status:{loading:"Connecting",live:"Live database",stale:"Last verified snapshot",unavailable:"Temporarily unavailable"},
+    metrics:["Members","Active ideas","Stored responses","Online now"],updated:"Updated",open:"Open full platform insights →",
+    privacy:"Only aggregate counts are shown. Private studies and individual responses stay protected.",
+  },
+  zh:{
+    eyebrow:"实时平台快照",title:"只展示真实数据，不虚构活跃度。",
+    description:"这些数字直接来自 InsightLab 的生产数据库，并会在页面打开期间自动刷新。",
+    status:{loading:"正在连接",live:"实时数据库",stale:"最近一次已验证快照",unavailable:"暂时无法获取"},
+    metrics:["平台成员","活跃创意","已存反馈","当前在线"],updated:"更新时间",open:"打开完整平台数据总览 →",
+    privacy:"这里只展示汇总数字。私密调研与个人反馈始终受到保护。",
+  },
+  es:{
+    eyebrow:"RESUMEN EN VIVO",title:"Cifras reales, sin actividad inventada.",
+    description:"Estos datos proceden directamente de la base de producción de InsightLab y se actualizan mientras la página está abierta.",
+    status:{loading:"Conectando",live:"Base de datos en vivo",stale:"Último resumen verificado",unavailable:"No disponible temporalmente"},
+    metrics:["Miembros","Ideas activas","Respuestas guardadas","En línea"],updated:"Actualizado",open:"Abrir todos los datos de la plataforma →",
+    privacy:"Solo se muestran cifras agregadas. Los estudios privados y las respuestas individuales permanecen protegidos.",
+  },
+};
+
+function HomeNetworkSnapshot({locale,onOpen}:{locale:Locale;onOpen:()=>void}){
+  const {data,state}=usePlatformOverview();
+  const text=networkSnapshotCopy[locale];
+  const values=data
+    ? [data.metrics.users,data.metrics.validations,data.metrics.responses,data.metrics.online]
+    : [null,null,null,null];
+  const localeTag=locale==="zh"?"zh-CN":locale;
+  const updated=data?.asOf
+    ? new Intl.DateTimeFormat(localeTag,{hour:"2-digit",minute:"2-digit"}).format(new Date(data.asOf))
+    : "—";
+  return <section className="home-live-snapshot" aria-labelledby="home-live-title">
+    <div className="home-live-shell">
+      <div className="home-live-intro">
+        <span>{text.eyebrow}</span>
+        <h2 id="home-live-title">{text.title}</h2>
+        <p>{text.description}</p>
+        <div className={`home-live-state ${state}`} role="status" aria-live="polite"><i/>{text.status[state]}</div>
+      </div>
+      <div className="home-live-data">
+        <div className="home-live-metrics">
+          {values.map((value,index)=><article key={text.metrics[index]}>
+            <span>0{index+1}</span>
+            <b>{value===null?"—":value.toLocaleString(localeTag)}</b>
+            <small>{text.metrics[index]}</small>
+          </article>)}
+        </div>
+        <div className="home-live-foot">
+          <p>{text.privacy}</p>
+          <span>{text.updated} {updated}</span>
+          <button onClick={onOpen}>{text.open}</button>
+        </div>
+      </div>
+    </div>
+  </section>;
+}
+
+function PlatformInsights({onStart}:{onStart:(role?:Role)=>void}){
+  const {data,state}=usePlatformOverview();
+  const metricValue=(value:number|undefined)=>data?Number(value??0).toLocaleString():"—";
   const metrics=[
     ["ACTIVE IDEAS",data?.metrics.validations??0,"Founder studies in the validation loop"],
     ["VERIFIED FEEDBACK",data?.metrics.responses??0,"Stored, quality-scored contributor responses"],
@@ -1122,7 +1580,7 @@ function PlatformInsights({onStart}:{onStart:(role?:Role)=>void}){
   const maxActivity=Math.max(1,...activity.map(item=>item.count));
   return <section className="platform-insights-page">
     <div className="platform-insights-hero">
-      <div><span>GENERAL · PLATFORM INSIGHTS</span><h1>Three perspectives.<br/><em>One readable pulse.</em></h1><p>This public overview summarizes activity at network level. It is designed for discovery and transparency—never for exposing a person’s private response.</p><div className="platform-hero-actions"><button className="primary" onClick={()=>onStart()}>Join the network →</button><small><i/> {data?"LIVE DATABASE SNAPSHOT":"CONNECTING TO PLATFORM DATA"}</small></div></div>
+      <div><span>GENERAL · PLATFORM INSIGHTS</span><h1>Three perspectives.<br/><em>One readable pulse.</em></h1><p>This public overview summarizes activity at network level. It is designed for discovery and transparency—never for exposing a person’s private response.</p><div className="platform-hero-actions"><button className="primary" onClick={()=>onStart()}>Join the network →</button><small className={state}><i/> {state==="live"?"LIVE DATABASE SNAPSHOT":state==="stale"?"LAST VERIFIED DATABASE SNAPSHOT":state==="unavailable"?"LIVE DATA TEMPORARILY UNAVAILABLE":"CONNECTING TO PLATFORM DATA"}</small></div></div>
       <div className="platform-orbit" aria-label="Founder, contributor, and investor data orbit">
         <div className="platform-orbit-ring ring-a"/><div className="platform-orbit-ring ring-b"/>
         <div className="platform-orbit-core"><span>INSIGHT</span><b>{Math.round(data?.metrics.averageQuality??0)}</b><small>AVG QUALITY</small></div>
@@ -1132,12 +1590,12 @@ function PlatformInsights({onStart}:{onStart:(role?:Role)=>void}){
         {Array.from({length:6},(_,index)=><i className={`orbit-signal os-${index+1}`} key={index}/>)}
       </div>
     </div>
-    <div className="platform-live-metrics">{metrics.map((metric,index)=><article key={metric[0]}><span>0{index+1}</span><div className={`metric-symbol ms-${index+1}`}><i/><i/><i/><i/></div><b>{metric[1].toLocaleString()}</b><strong>{metric[0]}</strong><small>{metric[2]}</small></article>)}</div>
+    <div className="platform-live-metrics">{metrics.map((metric,index)=><article key={metric[0]}><span>0{index+1}</span><div className={`metric-symbol ms-${index+1}`}><i/><i/><i/><i/></div><b>{metricValue(Number(metric[1]))}</b><strong>{metric[0]}</strong><small>{metric[2]}</small></article>)}</div>
     <div className="platform-visual-grid">
       <article className="network-composition">
         <div className="platform-card-title"><span>ROLE COMPOSITION</span><b>LIVE PROFILE MIX</b></div>
         <div className="composition-body">
-          <div className="composition-donut" style={{background:roleTotalRaw?`conic-gradient(#d5744f 0 ${rolePercent(data?.roles.founder??0)}%,#758c78 ${rolePercent(data?.roles.founder??0)}% ${rolePercent((data?.roles.founder??0)+(data?.roles.contributor??0))}%,#b69a79 ${rolePercent((data?.roles.founder??0)+(data?.roles.contributor??0))}% 100%)`:"conic-gradient(#d9cec1 0 100%)"}}><div><b>{data?.metrics.users??0}</b><span>members</span></div></div>
+          <div className="composition-donut" style={{background:roleTotalRaw?`conic-gradient(#d5744f 0 ${rolePercent(data?.roles.founder??0)}%,#758c78 ${rolePercent(data?.roles.founder??0)}% ${rolePercent((data?.roles.founder??0)+(data?.roles.contributor??0))}%,#b69a79 ${rolePercent((data?.roles.founder??0)+(data?.roles.contributor??0))}% 100%)`:"conic-gradient(#d9cec1 0 100%)"}}><div><b>{data?data.metrics.users:"—"}</b><span>members</span></div></div>
           <div className="composition-legend">{[
             ["Founder",data?.roles.founder??0,"#d5744f"],
             ["Contributor",data?.roles.contributor??0,"#758c78"],
@@ -1151,18 +1609,18 @@ function PlatformInsights({onStart}:{onStart:(role?:Role)=>void}){
       </article>
     </div>
     <div className="platform-role-summary">
-      <article><span>FOUNDER SIGNAL</span><div className="summary-glyph founder-summary"><i/><i/><i/></div><h2>{data?.metrics.validations??0}</h2><p>ideas framed as measurable decisions</p><button onClick={()=>onStart("founder")}>Enter Founder →</button></article>
-      <article><span>CONTRIBUTOR VALUE</span><div className="summary-glyph contributor-summary"><i/><i/><i/><i/></div><h2>{data?.metrics.responses??0}</h2><p>responses scored for quality and integrity</p><button onClick={()=>onStart("contributor")}>Enter Contributor →</button></article>
-      <article><span>INVESTOR DISCOVERY</span><div className="summary-glyph investor-summary"><i/><i/><i/></div><h2>{Math.round(data?.metrics.averageQuality??0)}<small>/100</small></h2><p>average evidence quality across the network</p><button onClick={()=>onStart("investor")}>Enter Investor →</button></article>
+      <article><span>FOUNDER SIGNAL</span><div className="summary-glyph founder-summary"><i/><i/><i/></div><h2>{data?data.metrics.validations:"—"}</h2><p>ideas framed as measurable decisions</p><button onClick={()=>onStart("founder")}>Enter Founder →</button></article>
+      <article><span>CONTRIBUTOR VALUE</span><div className="summary-glyph contributor-summary"><i/><i/><i/><i/></div><h2>{data?data.metrics.responses:"—"}</h2><p>responses scored for quality and integrity</p><button onClick={()=>onStart("contributor")}>Enter Contributor →</button></article>
+      <article><span>INVESTOR DISCOVERY</span><div className="summary-glyph investor-summary"><i/><i/><i/></div><h2>{data?Math.round(data.metrics.averageQuality):"—"}<small>/100</small></h2><p>average evidence quality across the network</p><button onClick={()=>onStart("investor")}>Enter Investor →</button></article>
     </div>
     <div className="methodology-ribbon"><span>PUBLIC DATA STANDARD</span><p>Only aggregate counts and quality summaries appear here. Individual comments, contact details, and private studies stay inside their authorized workspaces.</p><i>{data?.asOf?`Updated ${new Date(data.asOf).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"})}`:"Awaiting live data"}</i></div>
   </section>;
 }
 
 function SignalSculpture({ role }:{role:Role}) {
-  return <div className="signal-sculpture" aria-label="Live validation signal">
+  return <div className="signal-sculpture" aria-label="Sample validation signal">
     <div className="signal-halo h1"/><div className="signal-halo h2"/>
-    <div className="signal-label top"><span>SAMPLE STUDY</span><b>284 RESPONSE DATASET</b></div>
+    <div className="signal-label top"><span>SAMPLE STUDY · DEMO</span><b>284 SAMPLE RESPONSES</b></div>
     <article className="signal-main">
       <span>{role === "founder" ? "VALIDATION PREVIEW" : role === "contributor" ? "MATCH PREVIEW" : "SIGNAL PREVIEW"}</span>
       <h3>Would a contribution-first talent network change how early teams hire?</h3>
@@ -1170,204 +1628,19 @@ function SignalSculpture({ role }:{role:Role}) {
       <div className="signal-meta"><span>Problem resonance <b>High</b></span><span>Confidence <b>94%</b></span></div>
     </article>
     <article className="signal-float f-one"><span>TOP THEME</span><b>Show me proof of skill</b><small>68% of qualified responses</small></article>
-    <article className="signal-float f-two"><span>MODEL PREVIEW</span><b>+12 quality-response scenario</b></article>
+    <article className="signal-float f-two"><span>MODEL SCENARIO</span><b>+12 illustrative quality-response lift</b></article>
   </div>
 }
 
-const globeRegions = [
-  { id: "global", label: "Global", focus: [20, 12] as [number, number] },
-  { id: "north-america", label: "North America", focus: [-105, 38] as [number, number] },
-  { id: "europe", label: "Europe", focus: [10, 50] as [number, number] },
-  { id: "asia", label: "Asia", focus: [103, 30] as [number, number] },
-  { id: "africa", label: "Africa", focus: [20, 2] as [number, number] },
-  { id: "oceania", label: "Oceania", focus: [137, -27] as [number, number] },
-];
-
-const globePartners = [
-  { city: "San Francisco", name: "Berkeley founder ecosystem", region: "north-america", coordinates: [-122.42, 37.77] as [number, number] },
-  { city: "New York", name: "Founder research community", region: "north-america", coordinates: [-74.0, 40.71] as [number, number] },
-  { city: "London", name: "University innovation lab", region: "europe", coordinates: [-0.13, 51.51] as [number, number] },
-  { city: "Berlin", name: "Climate technology network", region: "europe", coordinates: [13.4, 52.52] as [number, number] },
-  { city: "Singapore", name: "Asia founder circle", region: "asia", coordinates: [103.82, 1.35] as [number, number] },
-  { city: "Beijing", name: "Research contributor community", region: "asia", coordinates: [116.41, 39.9] as [number, number] },
-  { city: "Bangalore", name: "Builder network", region: "asia", coordinates: [77.59, 12.97] as [number, number] },
-  { city: "Nairobi", name: "Emerging market research node", region: "africa", coordinates: [36.82, -1.29] as [number, number] },
-  { city: "Sydney", name: "Accelerator community", region: "oceania", coordinates: [151.21, -33.87] as [number, number] },
-];
-
-function EcosystemGlobe() {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const markerPositions = useRef<Array<{ x:number; y:number; index:number; visible:boolean }>>([]);
-  const selectedRef = useRef("global");
-  const hoveredRef = useRef<number|null>(null);
-  const [selected, setSelected] = useState("global");
-  const [hovered, setHovered] = useState<number | null>(null);
-  const activeRegion = globeRegions.find(r => r.id === selected) ?? globeRegions[0];
-  const activePartners = selected === "global" ? globePartners : globePartners.filter(p => p.region === selected);
-
-  useEffect(() => { selectedRef.current = selected; }, [selected]);
-  useEffect(() => { hoveredRef.current = hovered; }, [hovered]);
-
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const context = canvas.getContext("2d");
-    if (!context) return;
-    const topology = worldData as unknown as Topology<{ countries: GeometryCollection }>;
-    const land = feature(topology, topology.objects.countries);
-    const projection = geoOrthographic().clipAngle(90).precision(.35);
-    const graticule = geoGraticule10();
-    let rotation = -18;
-    let tilt = -10;
-    let scale = 190;
-    let previous = performance.now();
-    let animationFrame = 0;
-
-    const draw = (time:number) => {
-      const rect = canvas.getBoundingClientRect();
-      const ratio = Math.min(window.devicePixelRatio || 1, 2);
-      if (canvas.width !== Math.round(rect.width * ratio) || canvas.height !== Math.round(rect.height * ratio)) {
-        canvas.width = Math.round(rect.width * ratio);
-        canvas.height = Math.round(rect.height * ratio);
-      }
-      context.setTransform(ratio, 0, 0, ratio, 0, 0);
-      context.clearRect(0, 0, rect.width, rect.height);
-
-      const delta = Math.min(time - previous, 40);
-      previous = time;
-      const region = globeRegions.find(r => r.id === selectedRef.current) ?? globeRegions[0];
-      const targetScale = Math.min(rect.width, rect.height) * (selectedRef.current === "global" ? .41 : .53);
-      if (selectedRef.current === "global") {
-        if (hoveredRef.current === null) rotation += delta * .0042;
-        tilt += (-10 - tilt) * .06;
-      } else {
-        const targetRotation = -region.focus[0];
-        const difference = ((targetRotation - rotation + 540) % 360) - 180;
-        rotation += difference * .075;
-        tilt += (-region.focus[1] - tilt) * .075;
-      }
-      scale += (targetScale - scale) * .075;
-      projection.translate([rect.width / 2, rect.height / 2]).scale(scale).rotate([rotation, tilt]);
-      const path = geoPath(projection, context);
-
-      const atmosphere = context.createRadialGradient(rect.width*.42, rect.height*.36, 8, rect.width/2, rect.height/2, scale*1.15);
-      atmosphere.addColorStop(0, "rgba(119,166,133,.28)");
-      atmosphere.addColorStop(.58, "rgba(53,86,65,.16)");
-      atmosphere.addColorStop(1, "rgba(221,121,77,0)");
-      context.beginPath();
-      context.arc(rect.width/2, rect.height/2, scale*1.13, 0, Math.PI*2);
-      context.fillStyle = atmosphere;
-      context.fill();
-
-      context.beginPath();
-      path({ type: "Sphere" });
-      const ocean = context.createRadialGradient(rect.width*.39, rect.height*.3, scale*.05, rect.width*.54, rect.height*.57, scale);
-      ocean.addColorStop(0, "#496c57");
-      ocean.addColorStop(.52, "#294638");
-      ocean.addColorStop(1, "#152c24");
-      context.fillStyle = ocean;
-      context.fill();
-      context.strokeStyle = "rgba(226,196,169,.42)";
-      context.lineWidth = 1.2;
-      context.stroke();
-
-      context.beginPath();
-      path(graticule);
-      context.strokeStyle = "rgba(229,214,197,.10)";
-      context.lineWidth = .65;
-      context.stroke();
-
-      context.beginPath();
-      path(land);
-      context.fillStyle = selectedRef.current === "global" ? "#87977e" : "#9daa90";
-      context.fill();
-      context.strokeStyle = "rgba(26,48,37,.62)";
-      context.lineWidth = .55;
-      context.stroke();
-
-      const center:[number,number] = [-rotation, -tilt];
-      markerPositions.current = globePartners.map((partner, index) => {
-        const point = projection(partner.coordinates);
-        const visible = Boolean(point) && geoDistance(partner.coordinates, center) < Math.PI / 2;
-        const matches = selectedRef.current === "global" || selectedRef.current === partner.region;
-        if (point && visible && matches) {
-          const [x,y] = point;
-          const pulse = 5 + Math.sin(time/420 + index) * 1.8;
-          context.beginPath();
-          context.arc(x, y, pulse * 2.5, 0, Math.PI*2);
-          const glow = context.createRadialGradient(x,y,1,x,y,pulse*2.5);
-          glow.addColorStop(0,"rgba(255,221,180,.88)");
-          glow.addColorStop(.28,"rgba(226,116,73,.62)");
-          glow.addColorStop(1,"rgba(226,116,73,0)");
-          context.fillStyle = glow;
-          context.fill();
-          context.beginPath();
-          context.arc(x, y, hoveredRef.current === index ? 5.4 : 3.5, 0, Math.PI*2);
-          context.fillStyle = hoveredRef.current === index ? "#fff0d6" : "#e8794d";
-          context.fill();
-          if (hoveredRef.current === index) {
-            context.beginPath();
-            context.moveTo(x+7,y);
-            context.lineTo(x+24,y-14);
-            context.strokeStyle = "rgba(255,234,209,.72)";
-            context.stroke();
-            context.font = "700 10px Arial";
-            context.fillStyle = "#fff4e6";
-            context.fillText(partner.city, x+28, y-13);
-          }
-          return {x,y,index,visible:true};
-        }
-        return {x:point?.[0] ?? 0,y:point?.[1] ?? 0,index,visible:false};
-      });
-
-      const shade = context.createLinearGradient(rect.width*.25,0,rect.width*.78,rect.height);
-      shade.addColorStop(0,"rgba(255,238,210,.13)");
-      shade.addColorStop(.48,"rgba(255,255,255,0)");
-      shade.addColorStop(1,"rgba(7,24,18,.48)");
-      context.beginPath();
-      context.arc(rect.width/2,rect.height/2,scale,0,Math.PI*2);
-      context.fillStyle=shade;
-      context.fill();
-      animationFrame = requestAnimationFrame(draw);
-    };
-    animationFrame = requestAnimationFrame(draw);
-    return () => cancelAnimationFrame(animationFrame);
-  }, []);
-
-  const locateMarker = (event:React.PointerEvent<HTMLCanvasElement>) => {
-    const rect = event.currentTarget.getBoundingClientRect();
-    const x = event.clientX - rect.left;
-    const y = event.clientY - rect.top;
-    const nearest = markerPositions.current
-      .filter(p => p.visible)
-      .map(p => ({...p, distance:Math.hypot(p.x-x,p.y-y)}))
-      .sort((a,b)=>a.distance-b.distance)[0];
-    setHovered(nearest && nearest.distance < 18 ? nearest.index : null);
-  };
-
-  const openHovered = () => {
-    if (hovered === null) return;
-    setSelected(globePartners[hovered].region);
-  };
-
-  return <section className="ecosystem globe-ecosystem">
-    <div className="ecosystem-copy"><span>CONNECTED ECOSYSTEM</span><h2>A living network,<br/><em>not a static map.</em></h2><p>Move across the illuminated globe, click a region, and inspect the founder, university, and research communities represented by each signal node.</p>
-      <div className="region-controls">{globeRegions.map(region=><button className={selected===region.id?"active":""} key={region.id} onClick={()=>setSelected(region.id)}><i/>{region.label}</button>)}</div>
-    </div>
-    <div className="globe-stage">
-      <div className="globe-aura"/><div className="orbit-line orbit-a"/><div className="orbit-line orbit-b"/>
-      <canvas ref={canvasRef} className={hovered === null ? "" : "has-hover"} aria-label="Interactive 3D globe of InsightLab ecosystem nodes" onPointerMove={locateMarker} onPointerLeave={()=>setHovered(null)} onClick={openHovered}/>
-      <div className="globe-hud top"><span>● NETWORK LIVE</span><b>Drag-free auto rotation</b></div>
-      <div className="globe-region-card">
-        <span>{activeRegion.label.toUpperCase()}</span>
-        <div className="partner-constellation">{activePartners.map((partner,index)=><button key={partner.city} onMouseEnter={()=>setHovered(globePartners.indexOf(partner))} onMouseLeave={()=>setHovered(null)} onClick={()=>setSelected(partner.region)}><i style={{animationDelay:`${index*.18}s`}}/><span><b>{partner.city}</b><small>{partner.name}</small></span></button>)}</div>
-      </div>
-      <div className="globe-hud bottom"><span>{globePartners.length} SIGNAL NODES</span><b>Click a light to focus its region</b></div>
-    </div>
-  </section>
-}
-
-function FounderWorkspace({notify,setView,apiFetch,isDemo,onSignIn}:{notify:(s:string)=>void;setView:(v:View)=>void;apiFetch:ApiFetch;isDemo:boolean;onSignIn:()=>void}) {
+function FounderWorkspace({notify,setView,apiFetch,isDemo,onSignIn,agentPatch,onAgentContext}:{
+  notify:(s:string)=>void;
+  setView:(v:View)=>void;
+  apiFetch:ApiFetch;
+  isDemo:boolean;
+  onSignIn:()=>void;
+  agentPatch:{id:number;patch:FounderAgentPatch}|null;
+  onAgentContext:(context:NonNullable<InsightAgentContext["founder"]>)=>void;
+}) {
   const [studyType,setStudyType]=useState<"idea"|"survey">("survey");
   const [idea,setIdea]=useState("");
   const [need,setNeed]=useState("");
@@ -1384,13 +1657,39 @@ function FounderWorkspace({notify,setView,apiFetch,isDemo,onSignIn}:{notify:(s:s
   const [uploading,setUploading]=useState(false);
   const [draggingFile,setDraggingFile]=useState(false);
   const [saving,setSaving]=useState(false);
+  const [aiApplied,setAiApplied]=useState(false);
   const fileInputRef=useRef<HTMLInputElement>(null);
+  const lastAgentPatch=useRef(0);
   const dataOptions=["Problem resonance","Willingness to try","Willingness to pay","Current alternative","Objections","Demographic split"];
   const estimatedReward=targetResponses*(studyType==="survey"?70:35);
   const toggleData=(item:string)=>setRequestedData(current=>current.includes(item)?current.filter(value=>value!==item):[...current,item]);
   const updateQuestion=(id:string,patch:Partial<SurveyQuestion>)=>setQuestions(current=>current.map(question=>question.id===id?{...question,...patch}:question));
   const addQuestion=()=>setQuestions(current=>[...current,{id:`q-${Date.now()}`,prompt:"",type:"single",required:false,options:["Option one","Option two"]}]);
   const removeQuestion=(id:string)=>setQuestions(current=>current.filter(question=>question.id!==id));
+  useEffect(()=>{
+    onAgentContext({
+      title:idea,
+      decision:need,
+      audience,
+      studyType,
+      requestedData,
+      questions:questions.map(question=>({prompt:question.prompt,type:question.type,required:question.required,options:question.options})),
+    });
+  },[audience,idea,need,onAgentContext,questions,requestedData,studyType]);
+  /* eslint-disable react-hooks/set-state-in-effect -- explicit user action applies an external AI draft */
+  useEffect(()=>{
+    if(!agentPatch||agentPatch.id===lastAgentPatch.current)return;
+    lastAgentPatch.current=agentPatch.id;
+    const patch=agentPatch.patch;
+    setIdea(patch.title.slice(0,120));
+    setNeed(patch.decision);
+    setAudience(patch.audience);
+    setStudyType(patch.studyType);
+    setRequestedData(patch.requestedData.length?patch.requestedData:["Problem resonance","Objections"]);
+    if(patch.studyType==="survey"&&patch.questions.length)setQuestions(patch.questions);
+    setAiApplied(true);
+  },[agentPatch]);
+  /* eslint-enable react-hooks/set-state-in-effect */
   const handleFile=async(file:File|null)=>{
     if(!file)return;
     const extension=file.name.split(".").pop()?.toLowerCase()??"";
@@ -1436,6 +1735,7 @@ function FounderWorkspace({notify,setView,apiFetch,isDemo,onSignIn}:{notify:(s:s
   return <section className="workspace-page role-workspace founder-studio">
     <DemoModeBar visible={isDemo} role="Founder" onSignIn={onSignIn}/>
     <div className="workspace-heading"><div><span>FOUNDER VALIDATION STUDIO</span><h1>Design the evidence<br/><em>before collecting it.</em></h1></div><button className="outline-btn" onClick={()=>setView("analytics")}>Open full analysis ↗</button></div>
+    {aiApplied&&<div className="ai-applied-banner"><InsightBrandMark/><p><b>Insight AI draft applied</b><span>Review and edit every field before saving or publishing.</span></p><button onClick={()=>setAiApplied(false)}>×</button></div>}
     <div className="founder-studio-layout">
       <article className="founder-builder">
         <div className="builder-progress"><span className="done"><b>01</b>Frame</span><i/><span className={idea.length>9?"done":""}><b>02</b>Design</span><i/><span><b>03</b>Preview</span></div>
@@ -1481,7 +1781,18 @@ const discoveryCopy={
   es:{loading:"Cargando validaciones publicadas…",loadingTag:"DATOS EN VIVO",live:"VALIDACIONES PUBLICADAS EN VIVO",fallback:"Todavía no hay validaciones publicadas. Se muestran ejemplos de demostración claramente etiquetados.",fallbackTag:"DATOS DE DEMOSTRACIÓN",error:"No se pudieron cargar las validaciones. Comprueba la conexión o la sesión e inténtalo de nuevo.",errorTag:"ERROR DE DATOS",retry:"Reintentar",founder:"Fundador verificado",founderName:"Fundador de InsightLab"},
 } satisfies Record<Locale,Record<"loading"|"loadingTag"|"live"|"fallback"|"fallbackTag"|"error"|"errorTag"|"retry"|"founder"|"founderName",string>>;
 
-function ContributorWorkspace({notify,apiFetch,isDemo,locale,reputation,onSignIn,onReputation}:{notify:(s:string)=>void;apiFetch:ApiFetch;isDemo:boolean;locale:Locale;reputation:number;onSignIn:()=>void;onReputation:(score:number)=>void}) {
+function ContributorWorkspace({notify,apiFetch,isDemo,locale,reputation,onSignIn,onReputation,agentPatch,onAgentContext,onIdeaToAgent}:{
+  notify:(s:string)=>void;
+  apiFetch:ApiFetch;
+  isDemo:boolean;
+  locale:Locale;
+  reputation:number;
+  onSignIn:()=>void;
+  onReputation:(score:number)=>void;
+  agentPatch:{id:number;patch:NonNullable<InsightAgentPatch["contributor"]>;draftId?:string|null}|null;
+  onAgentContext:(context:NonNullable<InsightAgentContext["contributor"]>)=>void;
+  onIdeaToAgent:(idea:Idea)=>void;
+}) {
   const [category,setCategory]=useState("All");
   const [search,setSearch]=useState("");
   const [active,setActive]=useState<Idea|null>(null);
@@ -1494,6 +1805,9 @@ function ContributorWorkspace({notify,apiFetch,isDemo,locale,reputation,onSignIn
   const [catalog,setCatalog]=useState<Idea[]>(isDemo?ideas:[]);
   const [catalogMode,setCatalogMode]=useState<DiscoveryMode>(isDemo?"demo":"loading");
   const [retryKey,setRetryKey]=useState(0);
+  const [agentDraftId,setAgentDraftId]=useState<string|null>(null);
+  const [aiApplied,setAiApplied]=useState(false);
+  const lastAgentPatch=useRef(0);
   const labels=discoveryCopy[locale];
   useEffect(()=>{
     if(isDemo)return;
@@ -1517,7 +1831,30 @@ function ContributorWorkspace({notify,apiFetch,isDemo,locale,reputation,onSignIn
   const categories=useMemo(()=>["All",...Array.from(new Set(catalog.map(idea=>idea.category)))],[catalog]);
   const filtered=useMemo(()=>catalog.filter(idea=>(category==="All"||idea.category===category)&&(idea.title+" "+idea.question+" "+idea.founder).toLowerCase().includes(search.toLowerCase())),[catalog,category,search]);
   const basePoints=mode==="rating"?12:mode==="comment"?35:70;
-  const openIdea=(idea:Idea)=>{setActive(idea);setMode(idea.availableModes.includes("comment")?"comment":"rating");setRating(0);setComment("");setAnswers({});};
+  const openIdea=(idea:Idea)=>{setActive(idea);setMode(idea.availableModes.includes("comment")?"comment":"rating");setRating(0);setComment("");setAnswers({});setAgentDraftId(null);};
+  useEffect(()=>{
+    onAgentContext({
+      category,
+      search,
+      activeIdea:active?{id:active.id,title:active.title,question:active.question,category:active.category,founder:active.founder,score:active.score,responses:active.responses,reward:active.reward}:null,
+      commentDraft:comment,
+    });
+  },[active,category,comment,onAgentContext,search]);
+  /* eslint-disable react-hooks/set-state-in-effect -- explicit user action applies an external AI draft */
+  useEffect(()=>{
+    if(!agentPatch||agentPatch.id===lastAgentPatch.current)return;
+    lastAgentPatch.current=agentPatch.id;
+    const patch=agentPatch.patch;
+    if(patch.category&&categories.includes(patch.category))setCategory(patch.category);
+    if(patch.search)setSearch(patch.search);
+    if(patch.commentDraft){
+      setComment(patch.commentDraft);
+      setMode("comment");
+      setAgentDraftId(agentPatch.draftId??null);
+    }
+    setAiApplied(true);
+  },[agentPatch,categories]);
+  /* eslint-enable react-hooks/set-state-in-effect */
   const updateAnswer=(question:SurveyQuestion,value:string)=>{
     if(question.type!=="multiple"){setAnswers(current=>({...current,[question.id]:value}));return;}
     setAnswers(current=>{
@@ -1543,7 +1880,7 @@ function ContributorWorkspace({notify,apiFetch,isDemo,locale,reputation,onSignIn
     setSubmitting(true);
     try{
       const response=await apiFetch("/api/responses",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({
-        validationId:active.id,body:comment,rating,category:active.category,contributionType:mode,answers,
+        validationId:active.id,body:comment,rating,category:active.category,contributionType:mode,answers,agentDraftId,
       })});
       const data=await response.json() as {rewardGranted?:number;reputation?:{current:number;change:number};error?:string};
       if(!response.ok)return notify(data.error??"We could not save that contribution.");
@@ -1552,7 +1889,7 @@ function ContributorWorkspace({notify,apiFetch,isDemo,locale,reputation,onSignIn
         onReputation(data.reputation.current);
       }
       notify(`Verified contribution · +${data.rewardGranted??basePoints} points · reputation ${data.reputation?.change&&data.reputation.change>0?"+":""}${data.reputation?.change??0}`);
-      setActive(null);setRating(0);setComment("");setAnswers({});
+      setActive(null);setRating(0);setComment("");setAnswers({});setAgentDraftId(null);
     }finally{setSubmitting(false);}
   };
   return <section className="workspace-page role-workspace contributor-page">
@@ -1563,15 +1900,21 @@ function ContributorWorkspace({notify,apiFetch,isDemo,locale,reputation,onSignIn
       {catalogMode==="error"&&<button onClick={retryCatalog}>{labels.retry}</button>}
     </div>}
     <div className="workspace-heading"><div><span>CONTRIBUTOR DISCOVERY</span><h1>Choose the ideas<br/><em>you can sharpen.</em></h1></div><div className="search-box"><span>⌕</span><input value={search} onChange={event=>setSearch(event.target.value)} placeholder="Search ideas, problems, or founders"/></div></div>
+    {aiApplied&&<div className="ai-applied-banner"><InsightBrandMark/><p><b>{locale==="zh"?"Insight AI 建议已应用":locale==="es"?"Sugerencia de Insight AI aplicada":"Insight AI notes applied"}</b><span>{locale==="zh"?"提交前请加入你自己的判断、例子与修改。":locale==="es"?"Añade tu propio criterio, ejemplos y cambios antes de enviar.":"Add your own judgment, examples, and edits before submitting."}</span></p><button onClick={()=>setAiApplied(false)} aria-label="Dismiss">×</button></div>}
     <div className="effort-key"><span>CHOOSE YOUR EFFORT</span><div><i>◇</i><b>Quick rating</b><small>12 base pts</small></div><div><i>✎</i><b>Reasoned comment</b><small>35 base pts</small></div><div><i>▦</i><b>Full survey</b><small>70 base pts</small></div><p>Final rewards are adjusted by specificity, integrity, and your continuously updated reputation.</p></div>
     <div className="interest-row">{categories.map(item=><button key={item} className={category===item?"active":""} onClick={()=>setCategory(item)}>{item}</button>)}</div>
-    <div className="contributor-layout"><div className="idea-feed">{filtered.length?filtered.map(idea=><article className="feed-card" key={idea.id}><div className="feed-top"><span style={{background:idea.color}}>{idea.category}</span><b>up to {idea.reward} pts</b></div><h2>{idea.title}</h2><p>{idea.question}</p><div className="task-mode-dots">{idea.availableModes.map(item=><span key={item}><i/>{item==="rating"?"Rating":item==="comment"?"Comment":"Survey"}</span>)}</div><div className="feed-stats"><span><b>{idea.score}</b> signal</span><span><b>{idea.responses}</b> responses</span><span><b>{idea.trend}</b> this week</span></div><div className="feed-founder"><span>{idea.founder[0]}</span><p><b>{idea.founder}</b><small>{labels.founder}</small></p><button onClick={()=>openIdea(idea)}>Choose response →</button></div></article>):<div className="feed-empty"><i/><h3>No exact matches.</h3><p>Try another category or a shorter search phrase.</p><button onClick={()=>{setSearch("");setCategory("All");}}>Reset discovery</button></div>}</div>
+    <div className="contributor-layout"><div className="idea-feed">{filtered.length?filtered.map(idea=><article className="feed-card agent-draggable-card" draggable onDragStart={event=>{
+      event.dataTransfer.effectAllowed="copy";
+      event.dataTransfer.setData("application/x-insightlab-idea",JSON.stringify({id:idea.id,title:idea.title,question:idea.question,category:idea.category,founder:idea.founder,score:idea.score,responses:idea.responses,reward:idea.reward}));
+    }} key={idea.id}><div className="feed-top"><span style={{background:idea.color}}>{idea.category}</span><b>up to {idea.reward} pts</b></div><button className="idea-to-ai" onClick={()=>onIdeaToAgent(idea)} aria-label={`Ask Insight AI about ${idea.title}`}><InsightBrandMark/>AI</button><h2>{idea.title}</h2><p>{idea.question}</p><div className="task-mode-dots">{idea.availableModes.map(item=><span key={item}><i/>{item==="rating"?"Rating":item==="comment"?"Comment":"Survey"}</span>)}</div><div className="feed-stats"><span><b>{idea.score}</b> signal</span><span><b>{idea.responses}</b> responses</span><span><b>{idea.trend}</b> this week</span></div><div className="feed-founder"><span>{idea.founder[0]}</span><p><b>{idea.founder}</b><small>{labels.founder}</small></p><button onClick={()=>openIdea(idea)}>Choose response →</button></div></article>):<div className="feed-empty"><i/><h3>No exact matches.</h3><p>Try another category or a shorter search phrase.</p><button onClick={()=>{setSearch("");setCategory("All");}}>Reset discovery</button></div>}</div>
       <aside className="contributor-score"><span>LIVE REPUTATION</span><div className="score-wheel" style={{background:`conic-gradient(#d8734e 0 ${displayReputation/10}%,rgba(255,255,255,.09) ${displayReputation/10}% 100%)`}}><div>{Math.round(displayReputation)}<small>/1000</small></div></div><h3>{displayReputation>=800?"Expert signal":displayReputation>=650?"Trusted specialist":"Building trust"}</h3><p>Your score recalculates after every response using quality, duplicate risk, and historical consistency.</p><div><b>Specificity</b><i><em style={{width:"88%"}}/></i><span>88</span></div><div><b>Constructiveness</b><i><em style={{width:"92%"}}/></i><span>92</span></div><button onClick={()=>notify("Interest settings are available from your profile.")}>Edit interests</button></aside>
     </div>
     {active&&<div className="modal-backdrop"><div className="response-modal response-studio"><button className="modal-close" onClick={()=>setActive(null)}>×</button><span>{active.category} · VERIFIED CONTRIBUTION</span><h2>{active.question}</h2>
       <div className="response-mode-switch">{active.availableModes.map(item=><button key={item} className={mode===item?"active":""} onClick={()=>setMode(item)}><i>{item==="rating"?"◇":item==="comment"?"✎":"▦"}</i><b>{item==="rating"?"Quick rating":item==="comment"?"Rate + explain":"Full survey"}</b><small>{item==="rating"?"~30 sec · 12 base pts":item==="comment"?"~3 min · 35 base pts":"~6 min · 70 base pts"}</small></button>)}</div>
       <label>Your rating<div className="stars">{[1,2,3,4,5].map(number=><button className={rating>=number?"on":""} key={number} onClick={()=>setRating(number)}>★</button>)}</div></label>
-      {mode==="comment"&&<label>Explain your reasoning<textarea value={comment} onChange={event=>setComment(event.target.value)} placeholder="What would make this useful—or fail? Specific examples receive more weight."/></label>}
+      {mode==="comment"&&<label>Explain your reasoning<textarea value={comment} onChange={event=>setComment(event.target.value)} placeholder="What would make this useful—or fail? Specific examples receive more weight."/>
+        {agentDraftId&&<small className="ai-authorship-note">AI-assisted outline detected · original examples and edits are required for full reputation weight.</small>}
+      </label>}
       {mode==="survey"&&<div className="contributor-survey">{active.surveyQuestions.map((question,index)=><article key={question.id}><span>0{index+1} {question.required&&"· REQUIRED"}</span><h3>{question.prompt}</h3>
         {question.type==="scale"&&<div className="survey-scale">{[1,2,3,4,5].map(number=><button className={answers[question.id]===String(number)?"active":""} key={number} onClick={()=>updateAnswer(question,String(number))}>{number}</button>)}</div>}
         {["single","multiple"].includes(question.type)&&<div className="survey-options">{question.options.map(option=>{const selected=Array.isArray(answers[question.id])?(answers[question.id] as string[]).includes(option):answers[question.id]===option;return <button className={selected?"active":""} key={option} onClick={()=>updateAnswer(question,option)}><i>{selected?"✓":"○"}</i>{option}</button>;})}</div>}
@@ -1734,6 +2077,7 @@ function ProfilePage({profile,apiFetch,locale,onLocaleChange,onSaved,notify}:{pr
   const [editing,setEditing]=useState(false);
   const [saving,setSaving]=useState(false);
   const [uploading,setUploading]=useState(false);
+  const [coverUploading,setCoverUploading]=useState(false);
   const [form,setForm]=useState({
     displayName:profile.displayName,
     headline:profile.headline,
@@ -1777,8 +2121,24 @@ function ProfilePage({profile,apiFetch,locale,onLocaleChange,onSaved,notify}:{pr
     }else notify(t.photoFailed);
     setUploading(false);
   };
+  const uploadCover=async(event:React.ChangeEvent<HTMLInputElement>)=>{
+    const file=event.target.files?.[0];
+    if(!file)return;
+    setCoverUploading(true);
+    const body=new FormData();
+    body.append("cover",file);
+    const response=await apiFetch("/api/profile-cover",{method:"POST",body});
+    if(response.ok){
+      const data=await response.json() as {coverUrl:string};
+      onSaved({...profile,coverUrl:data.coverUrl});
+      notify(locale==="zh"?"主页背景已更新":locale==="es"?"Fondo del perfil actualizado":"Profile background updated");
+    }else{
+      notify(locale==="zh"?"请使用小于 6 MB 的 JPG、PNG 或 WebP 图片":locale==="es"?"Usa una imagen JPG, PNG o WebP menor de 6 MB":"Use a JPG, PNG, or WebP image under 6 MB");
+    }
+    setCoverUploading(false);
+  };
   return <section className="workspace-page profile-page">
-    <div className="profile-cover" data-cover={form.coverStyle}><div className="profile-cover-grid"/><div className="profile-cover-copy"><span>{t.eyebrow}</span><h1>{t.titleA}<br/><em>{t.titleB}</em></h1></div><div className="profile-cover-signal"><i/><span><b>● {t.verified}</b><small>{profile.role.toUpperCase()} · {profile.memberTier.toUpperCase()}</small></span></div></div>
+    <div className={`profile-cover${profile.coverUrl?" custom-cover":""}`} data-cover={form.coverStyle} style={profile.coverUrl?{backgroundImage:`linear-gradient(90deg,rgba(31,21,28,.86),rgba(31,21,28,.28)),url("${profile.coverUrl}")`}:undefined}><div className="profile-cover-grid"/><div className="profile-cover-copy"><span>{t.eyebrow}</span><h1>{t.titleA}<br/><em>{t.titleB}</em></h1></div><div className="profile-cover-signal"><i/><span><b>● {t.verified}</b><small>{profile.role.toUpperCase()} · {profile.memberTier.toUpperCase()}</small></span></div></div>
     <div className="profile-shell">
       <aside className="profile-identity">
         <label className="profile-avatar">
@@ -1796,7 +2156,7 @@ function ProfilePage({profile,apiFetch,locale,onLocaleChange,onSaved,notify}:{pr
       </aside>
       <div className="profile-main">
         <div className="profile-score-row"><article><span>{t.reputation}</span><b>{Math.round(profile.reputationScore)}</b><i><em style={{width:`${Math.min(100,profile.reputationScore/10)}%`}}/></i></article><article><span>{t.membership}</span><b>{profile.memberTier}</b><small>{t.role}: {profile.role}</small></article><article><span>{t.strength}</span><b>{strength}%</b><small>{t.context}</small></article><article><span>{t.language}</span><b className="profile-language-value">{activeLanguage}</b><small>{languageOptions.find(option=>option.value===locale)?.label}</small></article></div>
-        {editing?<article className="profile-editor"><div className="dash-title"><span>{t.editor}</span><b>{t.saved}</b></div><div className="cover-picker"><span>{locale==="zh"?"主页背景":locale==="es"?"Fondo del perfil":"Profile background"}</span><div>{(["signal","ember","forest","constellation"] as const).map(item=><button type="button" aria-label={item} className={form.coverStyle===item?"active":""} data-cover={item} key={item} onClick={()=>setForm({...form,coverStyle:item})}><i/><b>{item}</b></button>)}</div></div><div className="profile-form-grid"><label>{t.displayName}<input value={form.displayName} onChange={event=>setForm({...form,displayName:event.target.value})}/></label><label>{t.headline}<input value={form.headline} onChange={event=>setForm({...form,headline:event.target.value})} placeholder={t.headlinePlaceholder}/></label><label>{t.location}<input value={form.location} onChange={event=>setForm({...form,location:event.target.value})} placeholder={t.locationPlaceholder}/></label><label>{t.website}<input value={form.website} onChange={event=>setForm({...form,website:event.target.value})} placeholder="your-site.com"/></label></div><label>{t.aboutYou}<textarea value={form.bio} onChange={event=>setForm({...form,bio:event.target.value})} placeholder={t.aboutPlaceholder}/></label><div className="profile-interest-edit"><span>{t.interests}</span><div>{allInterests.map(item=><button type="button" key={item} className={form.interests.includes(item)?"active":""} onClick={()=>toggle(item)}>{item}</button>)}</div></div><div className="profile-editor-language"><span>{t.languagePreference}</span><LanguageSwitcher locale={locale} onChange={onLocaleChange}/><small>{t.languageNote}</small></div><button className="primary" disabled={saving||form.displayName.trim().length<2} onClick={save}>{saving?t.saving:t.save}</button></article>:<>
+        {editing?<article className="profile-editor"><div className="dash-title"><span>{t.editor}</span><b>{t.saved}</b></div><div className="cover-picker"><span>{locale==="zh"?"主页背景":locale==="es"?"Fondo del perfil":"Profile background"}</span><div>{(["signal","ember","forest","constellation"] as const).map(item=><button type="button" aria-label={item} className={form.coverStyle===item?"active":""} data-cover={item} key={item} onClick={()=>setForm({...form,coverStyle:item})}><i/><b>{item}</b></button>)}</div><label className="cover-upload-button"><input type="file" accept="image/jpeg,image/png,image/webp" onChange={uploadCover}/><span>{coverUploading?(locale==="zh"?"上传中…":locale==="es"?"Subiendo…":"Uploading…"):(locale==="zh"?"上传自己的背景图":locale==="es"?"Subir fondo propio":"Upload your own cover")}</span><small>JPG · PNG · WEBP · 6 MB</small></label></div><div className="profile-form-grid"><label>{t.displayName}<input value={form.displayName} onChange={event=>setForm({...form,displayName:event.target.value})}/></label><label>{t.headline}<input value={form.headline} onChange={event=>setForm({...form,headline:event.target.value})} placeholder={t.headlinePlaceholder}/></label><label>{t.location}<input value={form.location} onChange={event=>setForm({...form,location:event.target.value})} placeholder={t.locationPlaceholder}/></label><label>{t.website}<input value={form.website} onChange={event=>setForm({...form,website:event.target.value})} placeholder="your-site.com"/></label></div><label>{t.aboutYou}<textarea value={form.bio} onChange={event=>setForm({...form,bio:event.target.value})} placeholder={t.aboutPlaceholder}/></label><div className="profile-interest-edit"><span>{t.interests}</span><div>{allInterests.map(item=><button type="button" key={item} className={form.interests.includes(item)?"active":""} onClick={()=>toggle(item)}>{item}</button>)}</div></div><div className="profile-editor-language"><span>{t.languagePreference}</span><LanguageSwitcher locale={locale} onChange={onLocaleChange}/><small>{t.languageNote}</small></div><button className="primary" disabled={saving||form.displayName.trim().length<2} onClick={save}>{saving?t.saving:t.save}</button></article>:<>
           <article className="profile-about"><div className="dash-title"><span>{t.about}</span><b>{t.publicPreview}</b></div><p>{profile.bio||t.emptyBio}</p><div className="profile-interest-list">{profile.interests.length?profile.interests.map(item=><span key={item}>{item}</span>):<span className="empty">{t.noInterests}</span>}</div></article>
           <div className="profile-dashboard-grid"><article className="profile-activity-preview"><div className="dash-title"><span>{t.activity}</span><b>{t.recent}</b></div><div>{[18,26,20,42,35,58,71,54,80,63,88,76].map((value,index)=><i key={index} style={{height:`${value}%`,animationDelay:`${index*.04}s`}}/>)}</div><small>{t.activityNote}</small></article><article className="profile-readiness"><div className="dash-title"><span>{t.readiness}</span><b>{strength}% {t.completion}</b></div><div>{completionItems.map(item=><p key={item.label} className={item.complete?"complete":""}><i>{item.complete?"✓":"＋"}</i><span>{item.label}</span><b>{item.complete?t.complete:t.missing}</b></p>)}</div></article></div>
           <article className="profile-preferences"><div className="dash-title"><span>{t.account}</span><b>{t.identity}</b></div><div className="profile-preference-grid"><section><span>{t.identity}</span><p><i>✓</i><b>{t.email}</b><small>{safeEmail||t.notAdded}</small></p><p className={profile.phone?"":"muted"}><i>{profile.phone?"✓":"○"}</i><b>{t.phone}</b><small>{profile.phone||t.notAdded}</small></p></section><section><span>{t.languagePreference}</span><LanguageSwitcher locale={locale} onChange={onLocaleChange}/><small>{t.languageNote}</small></section><section className="profile-privacy-card"><span>{t.privacy}</span><div><i/><i/><i/></div><p>{t.privacyNote}</p></section></div></article>

@@ -1,0 +1,1 @@
+CREATE INDEX `profiles_role_idx` ON `profiles` (`role`);

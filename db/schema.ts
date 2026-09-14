@@ -1,4 +1,4 @@
-import { integer, real, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { index, integer, real, sqliteTable, text } from "drizzle-orm/sqlite-core";
 
 export const validations = sqliteTable("validations", {
   id: integer("id").primaryKey({ autoIncrement: true }),
@@ -34,10 +34,14 @@ export const profiles = sqliteTable("profiles", {
   location: text("location").notNull().default(""),
   website: text("website").notNull().default(""),
   avatarKey: text("avatar_key").notNull().default(""),
+  coverKey: text("cover_key").notNull().default(""),
+  coverStyle: text("cover_style").notNull().default("signal"),
   preferredLanguage: text("preferred_language").notNull().default("en"),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
-});
+}, (table) => [
+  index("profiles_role_idx").on(table.role),
+]);
 
 export const presence = sqliteTable("presence", {
   email: text("email").primaryKey(),

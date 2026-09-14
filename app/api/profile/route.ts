@@ -19,6 +19,7 @@ async function db() {
     location TEXT NOT NULL DEFAULT '',
     website TEXT NOT NULL DEFAULT '',
     avatar_key TEXT NOT NULL DEFAULT '',
+    cover_key TEXT NOT NULL DEFAULT '',
     cover_style TEXT NOT NULL DEFAULT 'signal',
     preferred_language TEXT NOT NULL DEFAULT 'en',
     created_at TEXT NOT NULL,
@@ -30,6 +31,9 @@ async function db() {
   }
   if (!columns.results.some(column => column.name === "cover_style")) {
     await env.DB.prepare("ALTER TABLE profiles ADD COLUMN cover_style TEXT NOT NULL DEFAULT 'signal'").run();
+  }
+  if (!columns.results.some(column => column.name === "cover_key")) {
+    await env.DB.prepare("ALTER TABLE profiles ADD COLUMN cover_key TEXT NOT NULL DEFAULT ''").run();
   }
   await env.DB.prepare(`CREATE TABLE IF NOT EXISTS points_ledger (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -46,16 +50,28 @@ async function db() {
 
 const selectProfile = `SELECT display_name AS displayName, role, member_tier AS memberTier,
   reputation_score AS reputationScore, points_balance AS pointsBalance, interests, headline, bio, location, website,
-  avatar_key AS avatarKey, cover_style AS coverStyle, email, phone, preferred_language AS preferredLanguage
+  avatar_key AS avatarKey, cover_key AS coverKey, cover_style AS coverStyle, email, phone, preferred_language AS preferredLanguage
   FROM profiles WHERE auth_id = ? OR email = ? LIMIT 1`;
 
 function publicProfile(row: Record<string, unknown> | null) {
   if (!row) return null;
   return {
-    ...row,
+    displayName: String(row.displayName ?? ""),
+    role: String(row.role ?? ""),
+    memberTier: String(row.memberTier ?? "free"),
+    reputationScore: Number(row.reputationScore ?? 500),
+    pointsBalance: Number(row.pointsBalance ?? 100),
     interests: JSON.parse(String(row.interests ?? "[]")),
+    headline: String(row.headline ?? ""),
+    bio: String(row.bio ?? ""),
+    location: String(row.location ?? ""),
+    website: String(row.website ?? ""),
+    coverStyle: String(row.coverStyle ?? "signal"),
+    email: String(row.email ?? ""),
+    phone: row.phone ? String(row.phone) : null,
     preferredLanguage: ["en", "zh", "es"].includes(String(row.preferredLanguage)) ? String(row.preferredLanguage) : "en",
     avatarUrl: row.avatarKey ? `/api/avatar?key=${encodeURIComponent(String(row.avatarKey))}` : "",
+    coverUrl: row.coverKey ? `/api/profile-cover?key=${encodeURIComponent(String(row.coverKey))}` : "",
   };
 }
 
@@ -84,6 +100,10 @@ export async function POST(request: Request) {
   if (!["founder", "contributor", "investor"].includes(body.role ?? "")) {
     return Response.json({ error: "Valid role required" }, { status: 400 });
   }
+  if (user.registrationRole && user.registrationRole !== body.role) {
+    return Response.json({ error: "The role confirmed during registration cannot be changed." }, { status: 409 });
+  }
+  const confirmedRole = user.registrationRole ?? body.role!;
   const displayName = String(body.displayName ?? user.displayName).trim().slice(0, 80);
   if (displayName.length < 2) return Response.json({ error: "Display name required" }, { status: 400 });
   const clean = {
@@ -97,18 +117,21 @@ export async function POST(request: Request) {
   };
   const now = new Date().toISOString();
   const database = await db();
-  const existing = await database.prepare("SELECT id FROM profiles WHERE auth_id = ? OR email = ? LIMIT 1")
-    .bind(user.id, user.identityKey).first<{id:number}>();
+  const existing = await database.prepare("SELECT id,role FROM profiles WHERE auth_id = ? OR email = ? LIMIT 1")
+    .bind(user.id, user.identityKey).first<{id:number;role:string}>();
   if (existing) {
-    await database.prepare(`UPDATE profiles SET auth_id=?,phone=?,display_name=?,role=?,interests=?,
+    if (existing.role !== confirmedRole) {
+      return Response.json({ error: "The role bound to this account cannot be changed." }, { status: 409 });
+    }
+    await database.prepare(`UPDATE profiles SET auth_id=?,phone=?,display_name=?,interests=?,
       headline=?,bio=?,location=?,website=?,preferred_language=?,cover_style=?,updated_at=? WHERE id=?`)
-      .bind(user.id, user.phone, displayName, body.role, clean.interests, clean.headline,
+      .bind(user.id, user.phone, displayName, clean.interests, clean.headline,
         clean.bio, clean.location, clean.website, clean.preferredLanguage, clean.coverStyle, now, existing.id).run();
   } else {
     await database.prepare(`INSERT INTO profiles
       (auth_id,email,phone,display_name,role,member_tier,interests,headline,bio,location,website,preferred_language,cover_style,created_at,updated_at)
       VALUES (?, ?, ?, ?, ?, 'free', ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .bind(user.id, user.identityKey, user.phone, displayName, body.role, clean.interests,
+      .bind(user.id, user.identityKey, user.phone, displayName, confirmedRole, clean.interests,
         clean.headline, clean.bio, clean.location, clean.website, clean.preferredLanguage, clean.coverStyle, now, now).run();
     await database.prepare(`INSERT INTO points_ledger
       (profile_email,amount,balance_after,reason,reference_type,reference_id,created_at)

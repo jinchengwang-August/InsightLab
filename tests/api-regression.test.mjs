@@ -4,6 +4,7 @@ import { hasVerifiedSupabaseSession } from "../app/auth-flow.ts";
 import { discoveryModeForResponse } from "../app/discovery-flow.ts";
 import { analyzeForUser } from "../app/api/analyze/core.ts";
 import { getPublishedValidations } from "../app/api/validations/discovery.ts";
+import { classifyInsightAgentFailure, runInsightAgent } from "../app/api/agent/core.ts";
 import { verifyExternalUser } from "../app/external-auth.ts";
 
 const identities = {
@@ -192,4 +193,37 @@ test("discovery uses demo only for a successful empty response", () => {
   for (const status of [401, 403, 500]) {
     assert.equal(discoveryModeForResponse(status >= 200 && status < 300, 0), "error");
   }
+});
+
+test("verified Supabase metadata carries the permanent registration role", async () => {
+  const fetcher = async () => Response.json({
+    id: "registered-id",
+    email: "member@example.test",
+    user_metadata: { display_name: "Verified Member", role: "contributor" },
+  });
+  const user = await verifyExternalUser(apiRequest("/api/profile", "registered"), authEnvironment, fetcher);
+  assert.equal(user?.displayName, "Verified Member");
+  assert.equal(user?.registrationRole, "contributor");
+});
+
+test("Insight AI returns a transparent useful guided response when the live provider is unavailable", async () => {
+  const result = await runInsightAgent({
+    message: "Help me validate a neighborhood food-sharing idea",
+    role: "founder",
+    locale: "en",
+    context: { founder: { title: "", decision: "", audience: "", studyType: "idea", requestedData: [], questions: [] } },
+  }, {
+    id: "founder-id",
+    identityKey: "founder@example.test",
+  }, {});
+  assert.equal(result.status, 200);
+  assert.equal(result.body.serviceMode, "guided");
+  assert.match(result.body.serviceNotice, /not a model answer/i);
+  assert.equal(result.body.workspacePatch?.founder?.studyType, "survey");
+  assert.ok((result.body.workspacePatch?.founder?.questions.length ?? 0) >= 3);
+});
+
+test("Insight AI classifies provider quota failures without exposing provider payloads", () => {
+  assert.equal(classifyInsightAgentFailure({ code: "insufficient_quota", message: "quota exceeded" }), "insufficient-quota");
+  assert.equal(classifyInsightAgentFailure(new Error("network transport timeout")), "transport");
 });

@@ -1,0 +1,21 @@
+---
+description: InsightLab product, safety, quality, and release rules
+alwaysApply: true
+---
+
+# InsightLab project rules
+
+Read `AGENTS.md` and `docs/PROJECT_CONTEXT.md` before changing product code.
+
+- Preserve the dark plum, forest, cream, and burnt-orange visual system.
+- Keep English, Simplified Chinese, and Spanish product-owned copy synchronized without changing type scale or component geometry by locale.
+- Never translate user-authored ideas, profiles, comments, survey answers, or uploaded content automatically.
+- Keep demo and illustrative data visibly labeled. Never present sample activity, ecosystem nodes, model output, payments, or partnerships as live or verified.
+- Treat Supabase as authentication, D1 as application data, and R2 as private file storage. Never expose or commit secrets.
+- Preserve server-side authorization for `/admin`, founder-owned analysis, private files, and moderation actions.
+- Do not add production payment charging until a verified merchant account, webhook validation, policy review, and test-mode acceptance are complete.
+- Do not change the database schema without an inspected migration.
+- Reuse existing components and API boundaries before creating parallel implementations.
+- Run `npm run lint`, `npm test`, and `npm run build` before proposing publication.
+- Use a feature branch and pull request. Never force-push or push directly to `main`.
+- Do not deploy or create a new Site unless the user explicitly requests it and the existing `.openai/hosting.json` project is reused.

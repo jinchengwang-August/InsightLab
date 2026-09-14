@@ -1,8 +1,8 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "ff6453fa-1730-4190-9f0e-4af49264147b",
-  "prevId": "e8601db3-3e6b-4406-9ba5-e2c222d4cfe4",
+  "id": "3f13eb16-4c11-418d-b89d-d34776186258",
+  "prevId": "ff6453fa-1730-4190-9f0e-4af49264147b",
   "tables": {
     "analyses": {
       "name": "analyses",
@@ -307,6 +307,13 @@
             "email"
           ],
           "isUnique": true
+        },
+        "profiles_role_idx": {
+          "name": "profiles_role_idx",
+          "columns": [
+            "role"
+          ],
+          "isUnique": false
         }
       },
       "foreignKeys": {},

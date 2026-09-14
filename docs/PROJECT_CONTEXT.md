@@ -17,9 +17,11 @@ InsightLab is an idea-validation network where founders publish early ideas or s
 
 - Public site appears before login.
 - Registration and login are separate.
-- Email OTP, Google, and GitHub are supported when enabled in Supabase.
+- Email and password are the primary registration and login method.
+- Email confirmation and forgotten-password recovery use Supabase email links.
+- Google and GitHub OAuth are optional and appear only when enabled in Supabase.
 - A login identity without an InsightLab profile must be rejected and directed to registration.
-- Registration collects basic information and role, creates a profile, then returns the user to login.
+- Registration collects basic information and role, then creates the InsightLab profile after Supabase confirms a usable session.
 
 ## Scoring and rewards
 
@@ -55,7 +57,7 @@ environment and must never be committed to the repository.
 ## Remaining production work
 
 - Finish counsel-reviewed Privacy Policy, Terms, refund/cancellation, reward/tax, IP, moderation, and retention policies.
-- Configure working SMTP and enabled Supabase OAuth providers.
+- Verify production SMTP delivery for confirmation and password-reset emails, then enable the intended Supabase OAuth providers.
 - Connect verified Stripe test/live environments and webhooks.
 - Replace remaining labeled investor and marketing demo datasets with live records.
 - Train and validate predictive models only after outcome labels are available.

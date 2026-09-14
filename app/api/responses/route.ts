@@ -93,7 +93,7 @@ export async function GET(request:Request){
 
 export async function POST(request:Request){
   const user=await getExternalUser(request); if(!user)return Response.json({error:"Sign in required"},{status:401});
-  const body=await request.json() as {validationId?:number;body?:string;rating?:number;category?:string;contributionType?:string;answers?:unknown};
+  const body=await request.json() as {validationId?:number;body?:string;rating?:number;category?:string;contributionType?:string;answers?:unknown;agentDraftId?:string};
   const text=String(body.body??"").trim().slice(0,10_000);
   const rating=Number(body.rating??0);
   const contributionType=["rating","comment","survey"].includes(String(body.contributionType))?String(body.contributionType) as "rating"|"comment"|"survey":"comment";
@@ -117,37 +117,72 @@ export async function POST(request:Request){
   const sentiment=(rating-3)/2;
   const db=await database();
   const now=new Date().toISOString();
+  let aiSimilarity=0;
+  let agentDraftAvailable=false;
+  const agentDraftId=String(body.agentDraftId??"").slice(0,100);
+  if(agentDraftId&&contributionType==="comment"){
+    const draftTable=await db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='agent_drafts'").first<{name:string}>();
+    if(draftTable){
+      agentDraftAvailable=true;
+      const draft=await db.prepare("SELECT patch_json FROM agent_drafts WHERE id=? AND auth_id=? AND expires_at>? LIMIT 1")
+        .bind(agentDraftId,user.id,now)
+        .first<{patch_json:string}>();
+      if(draft?.patch_json){
+        try{
+          const parsed=JSON.parse(draft.patch_json) as {commentDraft?:string};
+          aiSimilarity=similarity(text,String(parsed.commentDraft??""));
+        }catch{/* An invalid expired draft simply receives no AI-reliance adjustment. */}
+      }
+    }
+  }
   const existing=contributionType==="rating"?{results:[] as Array<{body:string}>}:await db.prepare("SELECT body FROM responses WHERE validation_id=? AND LENGTH(body)>20 ORDER BY id DESC LIMIT 200").bind(body.validationId??1).all<{body:string}>();
   const maxSimilarity=existing.results.reduce((max,row)=>Math.max(max,similarity(scoringText,row.body)),0);
+  const commentWords=text.split(/\s+/).filter(Boolean).length;
+  const lowEffort=contributionType==="comment"&&(commentWords<8||text.length<45);
+  const aiReliance=aiSimilarity>.9?"direct":aiSimilarity>.72?"heavy":"edited";
   const reputation=await db.prepare("SELECT reputation_score FROM profiles WHERE auth_id=? OR email=?").bind(user.id,user.identityKey).first<{reputation_score:number}>();
   const previousReputation=Math.max(0,Math.min(1000,Number(reputation?.reputation_score??500)));
   const reputationMultiplier=Math.max(.85,Math.min(1.15,.85+(previousReputation/1000)*.3));
   const duplicateMultiplier=maxSimilarity>.82?.35:maxSimilarity>.65?.7:1;
-  const finalWeight=Math.max(.25,Math.min(1.45,scores.weight*reputationMultiplier*duplicateMultiplier));
+  const effortMultiplier=lowEffort?.55:1;
+  const aiMultiplier=aiReliance==="direct"?.4:aiReliance==="heavy"?.72:1;
+  const finalWeight=Math.max(.2,Math.min(1.45,scores.weight*reputationMultiplier*duplicateMultiplier*effortMultiplier*aiMultiplier));
   const baseReward=contributionType==="rating"?12:contributionType==="comment"?35:70;
   const rewardGranted=harmful?-Math.max(10,Math.round(baseReward*.75)):Math.max(1,Math.round(baseReward*finalWeight));
   const duplicatePenalty=maxSimilarity>.82?45:maxSimilarity>.65?15:0;
+  const authorshipPenalty=aiReliance==="direct"?18:aiReliance==="heavy"?5:0;
+  const lowEffortPenalty=lowEffort?12:0;
   const nextRaw=contributionType==="rating"
     ? previousReputation+.8
-    : previousReputation*(contributionType==="survey" ? .91 : .94)+scores.quality*10*(contributionType==="survey" ? .09 : .06)-duplicatePenalty;
+    : previousReputation*(contributionType==="survey" ? .91 : .94)+scores.quality*10*(contributionType==="survey" ? .09 : .06)-duplicatePenalty-authorshipPenalty-lowEffortPenalty;
   const nextReputation=Math.max(0,Math.min(1000,Math.round(harmful?nextRaw-90:nextRaw)));
   const result=await db.prepare(`INSERT INTO responses (validation_id,body,sentiment,specificity,constructiveness,integrity_score,reward_granted,contributor_email,rating,category,model_weight,contribution_type,answer_json,base_reward,reputation_after,created_at)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(body.validationId??1,text,sentiment,scores.specificity,scores.constructiveness,scores.quality,rewardGranted,user.identityKey,rating,String(body.category??"Other").slice(0,100),finalWeight,contributionType,answerJson,baseReward,nextReputation,now).run();
   const profile=await db.prepare("SELECT points_balance FROM profiles WHERE auth_id=? OR email=?").bind(user.id,user.identityKey).first<{points_balance:number}>();
   const nextBalance=Math.max(0,Number(profile?.points_balance??100)+rewardGranted);
+  const reviewRequired=!harmful&&(lowEffort||aiReliance==="direct"||maxSimilarity>.82);
+  const flags=[
+    ...(harmful?["unsafe_language"]:[]),
+    ...(lowEffort?["low_effort"]:[]),
+    ...(maxSimilarity>.82?["possible_duplicate"]:[]),
+    ...(aiReliance==="direct"?["ai_overreliance"]:[]),
+  ];
+  const ledgerReason=harmful?"Safety policy penalty":reviewRequired?"Contribution under integrity review":"Verified contribution";
   const updates=[
     db.prepare("UPDATE profiles SET reputation_score=?,points_balance=?,updated_at=? WHERE auth_id=? OR email=?").bind(nextReputation,nextBalance,now,user.id,user.identityKey),
     db.prepare(`INSERT INTO points_ledger (profile_email,amount,balance_after,reason,reference_type,reference_id,created_at)
-      VALUES (?,?,?,?,?,?,?)`).bind(user.identityKey,rewardGranted,nextBalance,harmful?"Safety policy penalty":"Verified contribution","response",String(result.meta.last_row_id),now),
+      VALUES (?,?,?,?,?,?,?)`).bind(user.identityKey,rewardGranted,nextBalance,ledgerReason,"response",String(result.meta.last_row_id),now),
   ];
   if(harmful)updates.push(db.prepare("UPDATE responses SET moderation_status='flagged' WHERE id=?").bind(result.meta.last_row_id));
+  else if(reviewRequired)updates.push(db.prepare("UPDATE responses SET moderation_status='review' WHERE id=?").bind(result.meta.last_row_id));
+  if(agentDraftId&&agentDraftAvailable)updates.push(db.prepare("DELETE FROM agent_drafts WHERE id=? AND auth_id=?").bind(agentDraftId,user.id));
   await db.batch(updates);
   return Response.json({
     id:result.meta.last_row_id,
-    scores:{...scores,maxSimilarity,reputationMultiplier,finalWeight},
+    scores:{...scores,maxSimilarity,reputationMultiplier,effortMultiplier,aiSimilarity,aiReliance,finalWeight},
     rewardGranted,
     pointsBalance:nextBalance,
-    moderation:{status:harmful?"flagged":"active",flags:harmful?["unsafe_language"]:[]},
+    moderation:{status:harmful?"flagged":reviewRequired?"review":"active",flags},
     reputation:{previous:Math.round(previousReputation),current:nextReputation,change:nextReputation-Math.round(previousReputation)},
   },{status:201});
 }

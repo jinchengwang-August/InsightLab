@@ -4,6 +4,7 @@ export type AppIdentity = {
   phone: string | null;
   displayName: string;
   identityKey: string;
+  registrationRole: "founder" | "contributor" | "investor" | null;
 };
 
 type SupabaseUserPayload = {
@@ -43,13 +44,15 @@ export async function verifyExternalUser(
   const email = payload.email ? String(payload.email).toLowerCase() : null;
   const phone = payload.phone ? String(payload.phone) : null;
   const metadata = payload.user_metadata ?? {};
-  const displayName = String(metadata.full_name ?? metadata.name ?? email?.split("@")[0] ?? phone ?? "InsightLab member").slice(0, 80);
+  const displayName = String(metadata.display_name ?? metadata.full_name ?? metadata.name ?? email?.split("@")[0] ?? phone ?? "InsightLab member").slice(0, 80);
+  const role = String(metadata.role ?? "");
   return {
     id,
     email,
     phone,
     displayName,
     identityKey: email ?? (phone ? `phone:${phone}` : `auth:${id}`),
+    registrationRole: role === "founder" || role === "contributor" || role === "investor" ? role : null,
   };
 }
 
