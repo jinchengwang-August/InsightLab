@@ -707,6 +707,23 @@ export default function InsightLabApp() {
   },[]);
 
   useEffect(()=>{
+    if(view!=="home")return;
+    const sections=Array.from(document.querySelectorAll<HTMLElement>("#insightlab-content > section"));
+    if(!sections.length)return;
+    const observer=new IntersectionObserver(entries=>{
+      for(const entry of entries){
+        if(entry.isIntersecting)entry.target.classList.add("is-in-view");
+      }
+    },{rootMargin:"-12% 0px -12% 0px",threshold:.14});
+    sections.forEach((section,index)=>{
+      section.classList.add("immersive-section");
+      section.style.setProperty("--section-index",String(index));
+      observer.observe(section);
+    });
+    return()=>observer.disconnect();
+  },[view]);
+
+  useEffect(()=>{
     window.scrollTo({top:0,behavior:"auto"});
   },[view]);
 
@@ -871,7 +888,7 @@ export default function InsightLabApp() {
   const workspaceRole=view==="founder"||view==="contributor"||view==="investor"?view:null;
 
   return (
-    <main className={`site-shell refreshed${agentOpen&&workspaceRole?` agent-open agent-${agentSide}`:""}`} data-locale={locale}>
+    <main className={`site-shell refreshed${view==="home"?" home-experience":""}${agentOpen&&workspaceRole?` agent-open agent-${agentSide}`:""}`} data-locale={locale}>
       <a className="skip-link" href="#insightlab-content">{locale==="zh"?"跳到主要内容":locale==="es"?"Saltar al contenido":"Skip to content"}</a>
       <PointerEffects />
       <header className={`nav reveal-nav ${view!=="home"||navVisible?"visible":""}`}>
@@ -1355,6 +1372,7 @@ function AuthGateway({client,configured,ready,providers,user,profile,profileLoad
     </section>
     <section className="auth-panel">
       <div className="auth-card expanded">
+        <div className="auth-card-head" aria-hidden="true"><span>INSIGHTLAB</span><i/><b>{intent==="register"?"01 / 03":"SECURE SESSION"}</b></div>
         {!ready?<div className="auth-loading"><i/><span>Preparing secure sign-in…</span></div>:recovery?<>
           <span className="auth-kicker">PASSWORD RECOVERY</span><h2>Choose a new password.</h2>
           <p>Your reset link is verified. Set a new password to protect your InsightLab account.</p>
@@ -1403,7 +1421,7 @@ function AuthGateway({client,configured,ready,providers,user,profile,profileLoad
             </div>
             <div className="auth-divider"><span>or use email and password</span></div>
             <label className="auth-label">Email address
-              <input type="email" autoComplete="email" value={contact} onChange={event=>setContact(event.target.value)} placeholder="you@example.com"/>
+              <input type="email" inputMode="email" autoCapitalize="none" autoCorrect="off" autoComplete="email" value={contact} onChange={event=>setContact(event.target.value)} placeholder="you@example.com"/>
             </label>
             {!forgotPassword&&<label className="auth-label">Password
               <input type="password" autoComplete={intent==="register"?"new-password":"current-password"} value={password} onChange={event=>setPassword(event.target.value)} placeholder="At least 8 characters"/>
@@ -1418,7 +1436,7 @@ function AuthGateway({client,configured,ready,providers,user,profile,profileLoad
           </>:<div className="auth-setup-note"><span>AUTH CONNECTION READY FOR SETUP</span><p>The password, Google, and GitHub interface is complete. Connect the project’s Supabase public configuration to activate real authentication.</p></div>}
           <div className="auth-divider"><span>explore before signing up</span></div>
           <div className="demo-role-row">{(["founder","contributor","investor"] as Role[]).map(item=><button key={item} onClick={()=>onDemo(item)}>Preview as {roleContent[item].label}</button>)}</div>
-          <small className="auth-security">Encrypted session · Passwords are handled by Supabase · One account per verified identity</small>
+          <small className="auth-security"><i/>Encrypted session · Passwords are handled by Supabase · One account per verified identity</small>
         </>}
       </div>
     </section>
