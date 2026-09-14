@@ -7,6 +7,18 @@ if [[ "${SITES_ENV_READY:-}" != "1" ]]; then
   exec bash "${script_dir}/sites-env.sh" -- bash "${script_dir}/build-verified.sh" "$@"
 fi
 
+# Vercel expects the native Next.js Build Output API artifacts in `.next`.
+# ChatGPT Sites uses vinext to produce its Cloudflare Worker bundle instead.
+if [[ "${VERCEL:-}" == "1" ]]; then
+  next_bin="${SITES_PROJECT_ROOT}/node_modules/.bin/next"
+  if [[ ! -x "${next_bin}" ]]; then
+    echo "Next.js is unavailable. Install dependencies before building." >&2
+    exit 69
+  fi
+  echo "Running native Next.js build for Vercel..."
+  exec "${next_bin}" build
+fi
+
 command -v timeout >/dev/null || {
   echo "build-verified.sh requires GNU timeout." >&2
   exit 69

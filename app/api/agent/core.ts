@@ -1,4 +1,4 @@
-import { Agent, OpenAIProvider, run } from "@openai/agents";
+import { Agent, OpenAIProvider, Runner } from "@openai/agents";
 import { z } from "zod";
 
 export type InsightAgentIdentity = {
@@ -391,18 +391,20 @@ export async function runInsightAgent(
   });
 
   const provider = new OpenAIProvider({apiKey, useResponses: true});
+  const runner = new Runner({
+    modelProvider: provider,
+    tracingDisabled: true,
+    traceIncludeSensitiveData: false,
+    workflowName: "InsightLab role-aware copilot",
+  });
   try {
-    const result = await run(agent, [
+    const result = await runner.run(agent, [
       `Authenticated role: ${input.role}`,
       `Interface locale: ${input.locale}`,
       `Workspace context: ${safeContext(input.context)}`,
       `User request: ${input.message}`,
     ].join("\n\n"), {
-      modelProvider: provider,
       maxTurns: 4,
-      tracingDisabled: true,
-      traceIncludeSensitiveData: false,
-      workflowName: "InsightLab role-aware copilot",
     });
     const parsed = insightAgentReply.parse(result.finalOutput);
     const draftId = await storeContributorDraftSafely(runtime.DB, identity, parsed);

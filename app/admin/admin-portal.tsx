@@ -79,8 +79,8 @@ export default function AdminPortal(){
     let active=true;
     let unsubscribe:(()=>void)|undefined;
     fetch("/api/auth/config")
-      .then(response=>response.json())
-      .then((config:{configured:boolean;url:string|null;publishableKey:string|null})=>{
+      .then(async response=>await response.json() as {configured:boolean;url:string|null;publishableKey:string|null})
+      .then(config=>{
         if(!active)return;
         if(!config.configured||!config.url||!config.publishableKey){
           setReady(true);

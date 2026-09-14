@@ -1,5 +1,5 @@
-import { getAdminAccessStatus, parseAdminEmailAllowlist } from "../access.ts";
-import { buildCleanupPreview, noStoreJson } from "./core.ts";
+import { getAdminAccessStatus, parseAdminEmailAllowlist } from "../access";
+import { buildCleanupPreview, noStoreJson } from "./core";
 
 type VerifiedIdentity = { email:string|null } | null;
 

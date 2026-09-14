@@ -1,4 +1,4 @@
-import { normalizeAdminEmail } from "../access.ts";
+import { normalizeAdminEmail } from "../access";
 
 type TableRow = { name:string };
 type ColumnRow = { name:string };

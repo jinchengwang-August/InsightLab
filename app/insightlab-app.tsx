@@ -607,8 +607,8 @@ export default function InsightLabApp() {
     let active = true;
     let unsubscribe:(()=>void)|undefined;
     fetch("/api/auth/config")
-      .then(response=>response.json())
-      .then((config:{configured:boolean;url:string|null;publishableKey:string|null;providers?:AuthProviders})=>{
+      .then(async response=>await response.json() as {configured:boolean;url:string|null;publishableKey:string|null;providers?:AuthProviders})
+      .then(config=>{
         if(!active)return;
         setAuthProviders(config.providers??{email:false,phone:false,google:false,github:false});
         if(!config.configured||!config.url||!config.publishableKey){
